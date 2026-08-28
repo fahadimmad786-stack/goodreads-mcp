@@ -741,8 +741,8 @@ def test_max_bytes_billed_survives_the_transport_change():
 
 def test_health_route_is_registered_and_does_not_query_bigquery():
     """A probe that queried would bill on every check and fail during a BQ incident."""
-    assert hasattr(server, "healthz")
-    src = inspect.getsource(server.healthz)
+    assert hasattr(server, "health")
+    src = inspect.getsource(server.health)
     assert "bq.run" not in src and "client()" not in src
 
 
@@ -770,7 +770,7 @@ def test_http_mode_keeps_stdout_purely_structured():
     access log defaults to stdout and would break that, so it is disabled --
     this test is what stops it coming back.
 
-    Uses /healthz only, so it needs no BigQuery access.
+    Uses /health only, so it needs no BigQuery access.
     """
     import socket
     import urllib.request
@@ -790,7 +790,7 @@ def test_http_mode_keeps_stdout_purely_structured():
         body = None
         while time.time() < deadline:
             try:
-                with urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=2) as r:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2) as r:
                     body = _json.loads(r.read())
                 break
             except Exception:  # noqa: BLE001

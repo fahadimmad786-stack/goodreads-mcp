@@ -22,6 +22,14 @@ DATASET="${DATASET:-goodreads}"
 SA_NAME="${SA_NAME:-goodreads-mcp-run}"
 SA="${SA_NAME}@${PROJECT}.iam.gserviceaccount.com"
 
+# Separate identity for Cloud Build. The project's default compute service
+# account has no roles, and `--source` builds need storage + Artifact Registry
+# + logging access. Granting those to the shared default SA would widen an
+# identity used by other resources, so the build gets its own -- and the
+# runtime SA above stays read-only with no build permissions.
+BUILD_SA_NAME="${BUILD_SA_NAME:-goodreads-mcp-build}"
+BUILD_SA="${BUILD_SA_NAME}@${PROJECT}.iam.gserviceaccount.com"
+
 # The principal allowed to invoke the service. Everyone else gets 403.
 # Defaults to the account running this script -- binding anyone else would
 # deploy something the deployer cannot reach. Add others afterwards with:
@@ -89,16 +97,62 @@ gcloud projects add-iam-policy-binding "${PROJECT}" \
 # Read the two tables -- scoped to the ONE dataset, not the project, so the SA
 # cannot read anything else.
 #
-# add-iam-policy-binding rather than a `bq show | edit | bq update --source`
-# round-trip: that pattern feeds output-only fields (etag, creationTime,
-# selfLink) back into an update and can clobber dataset properties. This
-# primitive touches only the binding.
-bq add-iam-policy-binding \
-  --member="serviceAccount:${SA}" \
-  --role="roles/bigquery.dataViewer" \
-  "${PROJECT}:${DATASET}" >/dev/null
+# Done with the BigQuery client rather than bq, for two reasons:
+#   * `bq add-iam-policy-binding` on a DATASET returns "This feature requires
+#     allowlisting" -- it is available for tables and routines, not datasets.
+#   * `bq show | edit | bq update --source` works but round-trips output-only
+#     fields (etag, creationTime, selfLink) back into an update, which can
+#     clobber dataset properties.
+# update_dataset with an explicit field mask PATCHes access_entries alone, and
+# the call is additive and idempotent.
+PY_BIN="${PY_BIN:-$([ -x .venv/bin/python ] && echo .venv/bin/python || echo python3)}"
+"${PY_BIN}" - "${PROJECT}" "${DATASET}" "${SA}" <<'PY'
+import sys
+from google.cloud import bigquery
+
+project, dataset_id, sa = sys.argv[1], sys.argv[2], sys.argv[3]
+client = bigquery.Client(project=project)
+ds = client.get_dataset(f"{project}.{dataset_id}")
+
+# READER on a dataset is the dataset-level equivalent of bigquery.dataViewer.
+already = any(
+    e.entity_type == "userByEmail" and e.entity_id == sa and e.role == "READER"
+    for e in ds.access_entries
+)
+if already:
+    print(f"dataset READER for {sa} already present")
+else:
+    ds.access_entries = list(ds.access_entries) + [
+        bigquery.AccessEntry("READER", "userByEmail", sa)
+    ]
+    client.update_dataset(ds, ["access_entries"])   # field mask: nothing else
+    print(f"granted dataset READER to {sa}")
+PY
 
 echo "IAM: jobUser + logWriter on project, dataViewer on ${DATASET} only"
+echo
+
+# ---------------------------------------------------------------------------
+# 1b. Build service account
+# ---------------------------------------------------------------------------
+# roles/cloudbuild.builds.builder is the role Google maintains for exactly
+# this job (source bucket read, Artifact Registry write, build logs). Scoped
+# to a dedicated identity rather than the default compute SA.
+
+if gcloud iam service-accounts describe "${BUILD_SA}" --project "${PROJECT}" >/dev/null 2>&1; then
+  echo "build service account ${BUILD_SA} already exists"
+else
+  gcloud iam service-accounts create "${BUILD_SA_NAME}" \
+    --project "${PROJECT}" \
+    --display-name "goodreads-mcp Cloud Build"
+fi
+
+gcloud projects add-iam-policy-binding "${PROJECT}" \
+  --member="serviceAccount:${BUILD_SA}" \
+  --role="roles/cloudbuild.builds.builder" \
+  --condition=None >/dev/null
+
+echo "IAM: cloudbuild.builds.builder on the build SA (build-time only)"
 echo
 
 # ---------------------------------------------------------------------------
@@ -116,6 +170,7 @@ gcloud run deploy "${SERVICE}" \
   --region "${REGION}" \
   --source . \
   --service-account "${SA}" \
+  --build-service-account "projects/${PROJECT}/serviceAccounts/${BUILD_SA}" \
   --no-allow-unauthenticated \
   --ingress all \
   --cpu-boost \

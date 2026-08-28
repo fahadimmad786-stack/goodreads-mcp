@@ -305,6 +305,23 @@ gcloud run services proxy goodreads-mcp --region us-central1 --port 8080
 claude mcp add --transport http goodreads-remote http://127.0.0.1:8080/mcp
 ```
 
+> **`gcloud run services proxy` needs the `cloud-run-proxy` component**, which
+> a distro-packaged gcloud cannot install:
+> `ERROR: ... this Google Cloud CLI installation is managed by an external
+> package manager`. Fix by installing the standalone Cloud SDK from
+> <https://cloud.google.com/sdk/> (its `gcloud components install
+> cloud-run-proxy` works), or by installing the distro's proxy package if one
+> exists. Until then, use the bearer-token form below.
+
+Interim, without the proxy component — works today, but the token expires in
+about an hour and the registration must be refreshed:
+
+```bash
+claude mcp add --transport http goodreads-remote \
+  https://goodreads-mcp-552178111715.us-central1.run.app/mcp \
+  --header "Authorization: Bearer $(gcloud auth print-identity-token)"
+```
+
 **Trade-off:** an extra local process and a gcloud dependency, and it only
 works where you are gcloud-authenticated — not Claude.ai web, not a teammate
 without a `roles/run.invoker` binding. In exchange there is no token in any
@@ -391,8 +408,10 @@ Google-managed identity and keeps the runtime SA read-only.
 
 ### Health check
 
-`GET /healthz` returns status, transport and the active
-`max_bytes_billed`. It deliberately does not touch BigQuery: a probe that
+`GET /health` returns status, transport and the active
+`max_bytes_billed`. Note the path is `/health`, **not** `/healthz` — Google's
+frontend intercepts `/healthz` before it reaches Cloud Run, so that path 404s
+and never appears in the request log. It deliberately does not touch BigQuery: a probe that
 queried would bill on every check and would fail the service during a
 BigQuery incident the container could otherwise ride out.
 

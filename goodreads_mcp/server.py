@@ -1199,10 +1199,15 @@ def compare_user_vs_book_ratings(
 # --------------------------------------------------------------------------
 
 
-@mcp.custom_route("/healthz", methods=["GET"])
-async def healthz(request: Request) -> JSONResponse:
+@mcp.custom_route("/health", methods=["GET"])
+async def health(request: Request) -> JSONResponse:
     """
     Liveness probe. Deliberately does NOT touch BigQuery.
+
+    Served at /health, NOT /healthz: Google's frontend intercepts /healthz
+    before it reaches Cloud Run, so that path 404s and never appears in the
+    request log. Verified against the deployed service -- /zzz-bogus reaches
+    the container and logs a 404, /healthz does not reach it at all.
 
     A health check that ran a query would bill money on every probe and would
     fail the service during a BigQuery incident it could otherwise ride out --
