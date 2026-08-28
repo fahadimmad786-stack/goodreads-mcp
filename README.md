@@ -319,8 +319,23 @@ about an hour and the registration must be refreshed:
 ```bash
 claude mcp add --transport http goodreads-remote \
   https://goodreads-mcp-552178111715.us-central1.run.app/mcp \
-  --header "Authorization: Bearer $(gcloud auth print-identity-token)"
+  --header 'Authorization: Bearer ${GOODREADS_ID_TOKEN}'
 ```
+
+The `${VAR}` form is deliberate: Claude Code expands it when it reads the
+config, so **no token is written to `~/.claude.json`**. Export it in the shell
+that launches Claude Code:
+
+```bash
+export GOODREADS_ID_TOKEN=$(gcloud auth print-identity-token)
+```
+
+The token lives **60 minutes** and its audience is the gcloud OAuth client ID,
+not the service URL — the replay weakness Google's docs describe. Re-export
+and restart Claude Code when it expires; adding the export to `~/.zshrc`
+refreshes it per shell but not within a long session. This is the ergonomic
+cost of not having the proxy component, and the reason the proxy is the
+recommended path.
 
 **Trade-off:** an extra local process and a gcloud dependency, and it only
 works where you are gcloud-authenticated — not Claude.ai web, not a teammate
