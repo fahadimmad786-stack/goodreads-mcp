@@ -364,3 +364,206 @@ def test_edition_metrics_measure_the_same_work_identity_as_the_collapse():
     assert queries.title_norm("name") not in queries.RATING_AGGS.replace(
         queries.work_key("name"), ""
     )
+
+
+# --- telemetry --------------------------------------------------------------
+#
+# stdout is the MCP protocol channel. A byte written there corrupts JSON-RPC
+# framing and kills the connection silently, so the first test below is the
+# important one.
+
+
+import ast as _ast
+import contextlib
+import json as _json
+import os
+import pkgutil
+import sys
+import tempfile
+
+from goodreads_mcp import telemetry
+
+
+@contextlib.contextmanager
+def _telemetry_to(tmpdir):
+    """Point telemetry at a scratch file and guarantee it is enabled."""
+    path = os.path.join(tmpdir, "telemetry.jsonl")
+    prev_path = os.environ.get("GOODREADS_TELEMETRY_PATH")
+    prev_on = os.environ.get("GOODREADS_TELEMETRY")
+    os.environ["GOODREADS_TELEMETRY_PATH"] = path
+    os.environ["GOODREADS_TELEMETRY"] = "1"
+    try:
+        yield path
+    finally:
+        for key, val in (("GOODREADS_TELEMETRY_PATH", prev_path),
+                         ("GOODREADS_TELEMETRY", prev_on)):
+            if val is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = val
+
+
+def _read(path):
+    with open(path, encoding="utf-8") as fh:
+        return [_json.loads(line) for line in fh if line.strip()]
+
+
+def _call(name, **kw):
+    fn = getattr(server, name)
+    return getattr(fn, "fn", fn)(**kw)
+
+
+def test_every_tool_is_instrumented():
+    """
+    A tool cannot be added without telemetry -- same structural enforcement as
+    the query guards. Checks the source pairing and the runtime marker.
+    """
+    src = inspect.getsource(server)
+    plain = re.findall(r"@mcp\.tool\n(?!@telemetry\.instrument)", src)
+    assert not plain, f"{len(plain)} @mcp.tool without @telemetry.instrument"
+
+    declared = re.findall(r"@mcp\.tool\n@telemetry\.instrument\ndef (\w+)", src)
+    assert len(declared) >= 12, f"expected 12+ tools, found {len(declared)}"
+    for name in declared:
+        fn = getattr(server, name)
+        assert getattr(fn, "_telemetry_instrumented", False), name
+
+
+def test_tool_calls_write_nothing_to_stdout():
+    """
+    THE critical one. Captured at the file-descriptor level, not by swapping
+    sys.stdout, so a C-level or subprocess write would still be caught.
+    """
+    with tempfile.TemporaryDirectory() as tmp, _telemetry_to(tmp) as path:
+        saved_fd = os.dup(1)
+        capture = os.open(os.path.join(tmp, "stdout.bin"), os.O_RDWR | os.O_CREAT)
+        try:
+            os.dup2(capture, 1)
+            # A parameter failure: exercises the full instrumented path,
+            # including a telemetry write, without needing BigQuery.
+            _call("top_books_by_rating", min_ratings=0)
+            sys.stdout.flush()
+        finally:
+            os.dup2(saved_fd, 1)
+            os.close(saved_fd)
+            os.close(capture)
+        with open(os.path.join(tmp, "stdout.bin"), "rb") as fh:
+            written = fh.read()
+        assert written == b"", f"tool call wrote to stdout: {written[:200]!r}"
+        assert _read(path), "telemetry line was not written"
+
+
+def test_no_server_module_can_reach_stdout():
+    """
+    Package-wide, AST-level. stdout is the protocol channel, so no module the
+    server imports may reference it or print() without an explicit stderr
+    target -- and none may call logging.basicConfig, whose default is stderr
+    but whose stream= kwarg is one edit away from stdout.
+
+    telemetry_cli is exempt: it is a separate process whose whole job is to
+    print a report, and it never imports the server.
+    """
+    import goodreads_mcp
+
+    exempt = {"goodreads_mcp.telemetry_cli"}
+    checked = []
+    for mod in pkgutil.iter_modules(goodreads_mcp.__path__):
+        name = f"goodreads_mcp.{mod.name}"
+        if name in exempt:
+            continue
+        path = os.path.join(goodreads_mcp.__path__[0], f"{mod.name}.py")
+        if not os.path.exists(path):
+            continue
+        checked.append(name)
+        with open(path, encoding="utf-8") as fh:
+            tree = _ast.parse(fh.read(), filename=path)
+
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.Attribute) and node.attr == "stdout":
+                raise AssertionError(f"{name} references stdout at line {node.lineno}")
+            if not isinstance(node, _ast.Call):
+                continue
+            func = _ast.unparse(node.func)
+            assert "basicConfig" not in func, f"{name}:{node.lineno} calls {func}"
+            if func == "print":
+                target = next(
+                    (_ast.unparse(k.value) for k in node.keywords if k.arg == "file"),
+                    None,
+                )
+                assert target == "sys.stderr", (
+                    f"{name}:{node.lineno} print() targets {target or 'stdout'}"
+                )
+    assert "goodreads_mcp.server" in checked and "goodreads_mcp.telemetry" in checked
+
+
+def test_log_line_is_valid_json_with_the_required_fields():
+    with tempfile.TemporaryDirectory() as tmp, _telemetry_to(tmp) as path:
+        _call("top_books_by_rating", min_ratings=0)   # in-band param failure
+        (line,) = _read(path)                          # parses => valid JSON
+    for field in ("ts", "tool", "params", "outcome", "n_rows", "n_queries",
+                  "bytes_billed", "bytes_processed", "cache_hit", "job_ids",
+                  "duration_ms", "bq_ms", "overhead_ms"):
+        assert field in line, field
+    assert line["tool"] == "top_books_by_rating"
+    assert line["params"] == {"min_ratings": 0}, "params should be as passed"
+    assert line["outcome"] == "other_error"
+    assert line["error_type"] == "ParamError"
+
+
+def test_guard_rejection_is_logged_with_its_rule_and_not_the_sql():
+    """
+    A guard rejection must record which rule fired and the offending column,
+    and must never record the statement that tripped it.
+    """
+    with tempfile.TemporaryDirectory() as tmp, _telemetry_to(tmp) as path:
+
+        @telemetry.instrument
+        def offending_tool():
+            bq.guard("SELECT publish_day FROM `t` WHERE x = 1")
+
+        with pytest.raises(bq.QueryGuardError):
+            offending_tool()
+        (line,) = _read(path)
+
+    assert line["outcome"] == "guard_rejected"
+    assert line["guard_rule"] == "publish_day_banned"
+    assert line["guard_column"] == "publish_day"
+    blob = _json.dumps(line)
+    assert "SELECT" not in blob and "FROM" not in blob, "SQL leaked into the log"
+
+
+def test_guard_rules_are_all_distinctly_identified():
+    """Every guard branch must carry a rule id, or telemetry cannot attribute it."""
+    seen = set()
+    for sql in ("SELECT publish_day FROM t",
+                "SELECT language FROM t",
+                "SELECT * FROM t"):
+        with pytest.raises(bq.QueryGuardError) as ei:
+            bq.guard(sql)
+        assert ei.value.rule, sql
+        seen.add(ei.value.rule)
+    assert seen == {"publish_day_banned", "bare_language", "select_star"}
+
+
+def test_telemetry_can_be_disabled():
+    with tempfile.TemporaryDirectory() as tmp, _telemetry_to(tmp) as path:
+        os.environ["GOODREADS_TELEMETRY"] = "0"
+        _call("top_books_by_rating", min_ratings=0)
+        assert not os.path.exists(path), "log written while disabled"
+
+
+def test_telemetry_failure_does_not_break_a_tool_call():
+    """A telemetry problem must degrade to a stderr note, never fail the call."""
+    with tempfile.TemporaryDirectory() as tmp:
+        # A regular file where a directory is needed: mkdir raises inside the
+        # writer, which must swallow it.
+        blocker = os.path.join(tmp, "blocker")
+        open(blocker, "w").close()
+        os.environ["GOODREADS_TELEMETRY_PATH"] = os.path.join(blocker, "sub", "t.jsonl")
+        os.environ["GOODREADS_TELEMETRY"] = "1"
+        try:
+            out = _call("top_books_by_rating", min_ratings=0)
+            assert "error" in out, "the tool's own result should be unaffected"
+        finally:
+            os.environ.pop("GOODREADS_TELEMETRY_PATH", None)
+            os.environ.pop("GOODREADS_TELEMETRY", None)

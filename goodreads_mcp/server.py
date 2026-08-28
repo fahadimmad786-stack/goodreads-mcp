@@ -23,7 +23,7 @@ from typing import Annotated, Any
 from fastmcp import FastMCP
 from pydantic import Field
 
-from . import bq, caveats
+from . import bq, caveats, telemetry
 from .queries import (
     DEFAULT_MIN_RATINGS,
     RATING_AGGS,
@@ -92,6 +92,7 @@ def _unit_caveats(unit: str) -> tuple[str, ...]:
 
 
 @mcp.tool
+@telemetry.instrument
 def dataset_overview() -> dict[str, Any]:
     """
     Shape, coverage and known defects of the Goodreads dataset.
@@ -227,6 +228,7 @@ def dataset_overview() -> dict[str, Any]:
 
 
 @mcp.tool
+@telemetry.instrument
 def rating_distribution(
     min_ratings: Annotated[int, Field(ge=1, description=(
         "Minimum ratings a book must have to be counted. Floor 1. The median "
@@ -317,6 +319,7 @@ def rating_distribution(
 
 
 @mcp.tool
+@telemetry.instrument
 def top_books_by_rating(
     min_ratings: Annotated[int, Field(ge=1, description=(
         "Minimum ratings a book must have to be ranked. Floor 1. At low values "
@@ -501,6 +504,7 @@ def _grouped(
 
 
 @mcp.tool
+@telemetry.instrument
 def stats_by_language(
     min_ratings: Annotated[int, Field(ge=1, description="Minimum ratings per book. Floor 1.")] = DEFAULT_MIN_RATINGS,
     min_books: Annotated[int, Field(ge=1, description=(
@@ -569,6 +573,7 @@ def stats_by_language(
 
 
 @mcp.tool
+@telemetry.instrument
 def stats_by_year(
     year_from: Annotated[int, Field(description="Earliest publish_year, inclusive.")] = 1950,
     year_to: Annotated[int, Field(description="Latest publish_year, inclusive.")] = 2022,
@@ -627,6 +632,7 @@ def stats_by_year(
 
 
 @mcp.tool
+@telemetry.instrument
 def stats_by_publisher(
     min_ratings: Annotated[int, Field(ge=1, description="Minimum ratings per book. Floor 1.")] = DEFAULT_MIN_RATINGS,
     min_books: Annotated[int, Field(ge=1, description=(
@@ -692,6 +698,7 @@ def stats_by_publisher(
 
 
 @mcp.tool
+@telemetry.instrument
 def stats_by_author(
     min_ratings: Annotated[int, Field(ge=1, description="Minimum ratings per book. Floor 1.")] = DEFAULT_MIN_RATINGS,
     min_books: Annotated[int, Field(ge=1, description=(
@@ -763,6 +770,7 @@ _PAGE_BANDS = ["<100", "100-199", "200-299", "300-399", "400-499", "500-699", "7
 
 
 @mcp.tool
+@telemetry.instrument
 def page_count_stats(
     min_ratings: Annotated[int, Field(ge=1, description="Minimum ratings per book. Floor 1.")] = DEFAULT_MIN_RATINGS,
     language: Annotated[str | None, Field(description="language_normalised ISO code, e.g. 'en'.")] = None,
@@ -852,6 +860,7 @@ def page_count_stats(
 
 
 @mcp.tool
+@telemetry.instrument
 def publish_month_seasonality(
     year_from: Annotated[int | None, Field(description="Earliest publish_year, inclusive.")] = None,
     year_to: Annotated[int | None, Field(description="Latest publish_year, inclusive.")] = None,
@@ -926,6 +935,7 @@ def publish_month_seasonality(
 
 
 @mcp.tool
+@telemetry.instrument
 def user_ratings_overview() -> dict[str, Any]:
     """
     Shape of the user_ratings table: how the 1-5 stars are distributed, and
@@ -974,6 +984,7 @@ def user_ratings_overview() -> dict[str, Any]:
 
 
 @mcp.tool
+@telemetry.instrument
 def top_titles_by_user_ratings(
     min_ratings: Annotated[int, Field(ge=1, description=(
         "Minimum number of user ratings a title must have to be ranked. "
@@ -1055,6 +1066,7 @@ def top_titles_by_user_ratings(
 
 
 @mcp.tool
+@telemetry.instrument
 def compare_user_vs_book_ratings(
     min_user_ratings: Annotated[int, Field(ge=1, description=(
         "Minimum ratings from the 4,154-user panel for a title to appear."

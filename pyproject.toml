@@ -13,6 +13,7 @@ dev = ["pytest>=8.0"]
 
 [project.scripts]
 goodreads-mcp = "goodreads_mcp.server:main"
+goodreads-telemetry = "goodreads_mcp.telemetry_cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]

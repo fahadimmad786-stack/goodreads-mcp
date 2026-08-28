@@ -232,9 +232,43 @@ reproduces the documented coverage of 52,016 of 98,686 titles exactly; with
 Confining the join to one tool keeps its 52.7% coverage caveat from leaking
 into eleven tools that would otherwise look authoritative.
 
+## Telemetry
+
+Every tool is wrapped by `@telemetry.instrument`, sitting beneath `@mcp.tool`.
+A test fails if a tool is added without it — the same structural enforcement the
+query guards use. One JSON object per call is appended to
+`logs/telemetry.jsonl` (gitignored):
+
+```json
+{"ts":"...","tool":"stats_by_author","params":{"min_ratings":100,"unit":"works"},
+ "outcome":"ok","n_rows":5,"n_queries":2,"bytes_billed":232783872,
+ "bytes_processed":231847973,"cache_hit":false,"job_ids":["..."],
+ "duration_ms":4198.1,"bq_ms":4197.3,"overhead_ms":0.8,"queries":[...]}
+```
+
+Query results are never recorded, and a guard rejection logs `guard_rule` and
+`guard_column` — never the SQL that tripped it.
+
+**stdout is the MCP protocol channel.** This server speaks JSON-RPC over stdio,
+so a stray byte on stdout corrupts framing and kills the connection silently.
+Telemetry writes to a file by path; its only fallback is an explicit
+`file=sys.stderr`. `test_no_server_module_can_reach_stdout` walks every package
+module's AST and fails on a `stdout` reference, a `print()` without an explicit
+stderr target, or any `logging.basicConfig` call — whose default is stderr, but
+whose `stream=` kwarg is one edit from stdout.
+
+Configuration: `GOODREADS_TELEMETRY_PATH` moves the log,
+`GOODREADS_TELEMETRY=0` disables it entirely.
+
+```bash
+goodreads-telemetry                       # summary: calls, error rate, p50/p95,
+                                          # bytes billed, guard rules, params used
+goodreads-telemetry --tool stats_by_author --json
+```
+
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest tests/ -q        # 42 offline invariant tests
-PYTHONPATH=. .venv/bin/python tests/smoke_live.py   # 18 live calls, needs ADC
+.venv/bin/python -m pytest tests/ -q        # 50 offline invariant tests
+PYTHONPATH=. .venv/bin/python tests/smoke_live.py   # 18 live calls + probe, needs ADC
 ```

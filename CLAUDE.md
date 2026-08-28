@@ -18,12 +18,17 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
 gcloud auth application-default login          # BigQuery uses ADC
 
 # Tests
-.venv/bin/python -m pytest tests/ -q           # 42 offline invariant tests, no network
+.venv/bin/python -m pytest tests/ -q           # 50 offline invariant tests, no network
 .venv/bin/python -m pytest tests/test_guards.py::test_work_key_preserves_ranges_and_drops_volume_numbers -q
-.venv/bin/python tests/smoke_live.py           # 18 live BigQuery calls, needs ADC
+.venv/bin/python tests/smoke_live.py           # 18 live calls + a cache-miss probe, needs ADC
 
 # Run the server
 .venv/bin/python -m goodreads_mcp
+
+# Telemetry: one JSON line per tool call, at logs/telemetry.jsonl (gitignored)
+.venv/bin/goodreads-telemetry                  # summarise the log
+.venv/bin/goodreads-telemetry --json --tool stats_by_author
+GOODREADS_TELEMETRY=0 .venv/bin/python -m goodreads_mcp    # disable
 ```
 
 `pytest` only collects `tests/`; `smoke_live.py` is a script, not a pytest module, and bills real BigQuery queries.
@@ -66,7 +71,11 @@ The organising idea: **the dataset's defects are handled structurally, not by do
 
 **Grouped tools take `unit="editions" | "works"`.** A row in `books` is an edition. `stats_by_author` defaults to `"works"` (most-read author is a question about works); everything else defaults to `"editions"`. Both branches emit identical column names so `order_by` and the envelope are unaffected. `_grouped()` in `server.py` branches on it; `_unit_caveats()` maps the choice onto caveat ids.
 
+**Telemetry wraps every tool.** `@telemetry.instrument` sits *beneath* `@mcp.tool` on all twelve; a test fails if a tool is added without it. It records params as passed, outcome, row count, BigQuery job ids, bytes billed/processed, cache hit, and a wall-time vs BigQuery-time split. Guard rejections log the rule and column only — never the SQL. Results are never logged.
+
 ### Traps
+
+- **stdout is the MCP protocol channel — never write to it.** The server speaks JSON-RPC over stdio, so one stray byte on stdout corrupts framing and kills the connection silently: no error, no traceback. All diagnostics go to a file or `sys.stderr`. `test_no_server_module_can_reach_stdout` walks every package module's AST and fails on a `stdout` reference, a `print()` without `file=sys.stderr`, or any `logging.basicConfig` call. `telemetry_cli` is exempt — separate process, never imports the server.
 
 - **`guard()` regex-matches the SQL text**, so a query string mentioning `publish_day` or the bare `language` column throws `QueryGuardError` — *including inside a SQL comment*. Use `language_normalised`; `\b` deliberately does not match between `language` and `_normalised`.
 - **Several tests assert on source text** via `inspect.getsource(server)`. Renaming a helper or reformatting a `caveats.collect(...)` call can fail a test without changing behaviour. That is intentional — it is how "every tool reporting `pooled_rating` states the duplication caveat" is enforced — but expect it during refactors.
