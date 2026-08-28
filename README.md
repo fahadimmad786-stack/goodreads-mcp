@@ -301,41 +301,44 @@ Google's edge before reaching the container. Connect through the authenticated
 local proxy:
 
 ```bash
-gcloud run services proxy goodreads-mcp --region us-central1 --port 8080
+./proxy.sh                                                    # keep running
 claude mcp add --transport http goodreads-remote http://127.0.0.1:8080/mcp
 ```
 
-> **`gcloud run services proxy` needs the `cloud-run-proxy` component**, which
-> a distro-packaged gcloud cannot install:
-> `ERROR: ... this Google Cloud CLI installation is managed by an external
-> package manager`. Fix by installing the standalone Cloud SDK from
-> <https://cloud.google.com/sdk/> (its `gcloud components install
-> cloud-run-proxy` works), or by installing the distro's proxy package if one
-> exists. Until then, use the bearer-token form below.
+No header, no token, nothing in `~/.claude.json` — `proxy.sh` injects
+credentials and refreshes them itself. It must be running for the server to
+connect; without it Claude Code reports `ConnectionRefused`.
 
-Interim, without the proxy component — works today, but the token expires in
-about an hour and the registration must be refreshed:
+**The proxy needs the standalone Cloud SDK.** `gcloud components install
+cloud-run-proxy` fails on a distro-packaged gcloud:
+
+```
+ERROR: You cannot perform this action because this Google Cloud CLI
+installation is managed by an external package manager.
+```
+
+Install from <https://cloud.google.com/sdk/> — it coexists with the distro
+package and shares `~/.config/gcloud`, so authentication carries over with no
+re-login. `proxy.sh` uses `~/google-cloud-sdk/bin/gcloud` and clears
+`CLOUDSDK_ROOT_DIR`, which a distro install exports and which would otherwise
+point the standalone gcloud at the wrong root.
+
+<details>
+<summary>Fallback if you cannot install the standalone SDK</summary>
 
 ```bash
 claude mcp add --transport http goodreads-remote \
   https://goodreads-mcp-552178111715.us-central1.run.app/mcp \
   --header 'Authorization: Bearer ${GOODREADS_ID_TOKEN}'
-```
-
-The `${VAR}` form is deliberate: Claude Code expands it when it reads the
-config, so **no token is written to `~/.claude.json`**. Export it in the shell
-that launches Claude Code:
-
-```bash
 export GOODREADS_ID_TOKEN=$(gcloud auth print-identity-token)
 ```
 
-The token lives **60 minutes** and its audience is the gcloud OAuth client ID,
-not the service URL — the replay weakness Google's docs describe. Re-export
-and restart Claude Code when it expires; adding the export to `~/.zshrc`
-refreshes it per shell but not within a long session. This is the ergonomic
-cost of not having the proxy component, and the reason the proxy is the
-recommended path.
+The `${VAR}` form keeps the token out of `~/.claude.json`. Measured: the token
+lasts **60 minutes** and its `aud` is the gcloud OAuth client ID, not the
+service URL — the replay weakness Google documents. Re-export and restart
+Claude Code when it expires. This is strictly worse than the proxy on both
+ergonomics and security.
+</details>
 
 **Trade-off:** an extra local process and a gcloud dependency, and it only
 works where you are gcloud-authenticated — not Claude.ai web, not a teammate
