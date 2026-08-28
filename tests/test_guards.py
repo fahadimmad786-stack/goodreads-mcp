@@ -375,6 +375,7 @@ def test_edition_metrics_measure_the_same_work_identity_as_the_collapse():
 
 import ast as _ast
 import contextlib
+import io
 import json as _json
 import os
 import pkgutil
@@ -465,7 +466,7 @@ def test_no_server_module_can_reach_stdout():
     """
     import goodreads_mcp
 
-    exempt = {"goodreads_mcp.telemetry_cli"}
+    exempt = {"goodreads_mcp.telemetry_cli", "goodreads_mcp.telemetry_stdout"}
     checked = []
     for mod in pkgutil.iter_modules(goodreads_mcp.__path__):
         name = f"goodreads_mcp.{mod.name}"
@@ -567,3 +568,249 @@ def test_telemetry_failure_does_not_break_a_tool_call():
         finally:
             os.environ.pop("GOODREADS_TELEMETRY_PATH", None)
             os.environ.pop("GOODREADS_TELEMETRY", None)
+
+
+# --- transport-scoped stdout ban --------------------------------------------
+#
+# Under HTTP, stdout is not the protocol channel and Cloud Run wants logs
+# there. The ban is NOT relaxed for that: it is scoped by the import graph, so
+# under stdio the stdout-writing code is absent from the process. These tests
+# pin that scoping, which is what makes the AST exemption above narrow enough
+# to be safe.
+
+import subprocess
+import textwrap
+import time
+
+
+def test_transport_defaults_to_stdio_the_restrictive_mode():
+    """A missing set_transport() must fail safe, not open stdout."""
+    src = inspect.getsource(telemetry)
+    assert '_TRANSPORT = "stdio"' in src, "the module default must be stdio"
+
+
+def test_stdout_sink_refuses_to_arm_under_stdio():
+    """
+    Even a direct import cannot arm it. activate() re-checks the transport, so
+    the guarantee does not rest on the import site alone.
+    """
+    from goodreads_mcp import telemetry_stdout
+
+    telemetry.set_transport("stdio")
+    with pytest.raises(RuntimeError, match="cannot be used under stdio"):
+        telemetry_stdout.activate()
+
+
+def test_requesting_the_stdout_sink_under_stdio_raises():
+    prev = os.environ.get("GOODREADS_TELEMETRY_SINK")
+    os.environ["GOODREADS_TELEMETRY_SINK"] = "stdout"
+    try:
+        with pytest.raises(RuntimeError, match="cannot be used under stdio"):
+            telemetry.set_transport("stdio")
+    finally:
+        if prev is None:
+            os.environ.pop("GOODREADS_TELEMETRY_SINK", None)
+        else:
+            os.environ["GOODREADS_TELEMETRY_SINK"] = prev
+        telemetry.set_transport("stdio")
+
+
+def test_stdout_sink_is_never_imported_under_stdio():
+    """
+    The strong claim: not merely unused, but absent from the process.
+
+    Run in a clean interpreter, because any other test importing the module
+    would pollute sys.modules and make an in-process check meaningless. The
+    subprocess also doubles as a second stdout check -- its entire stdout must
+    be the single OK line.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        code = textwrap.dedent(
+            """
+            import os, sys
+            os.environ["GOODREADS_TELEMETRY"] = "1"
+            os.environ["GOODREADS_TELEMETRY_PATH"] = sys.argv[1]
+            os.environ.pop("GOODREADS_TELEMETRY_SINK", None)
+
+            from goodreads_mcp import telemetry, server
+            telemetry.set_transport("stdio")
+            server.top_books_by_rating(min_ratings=0)   # in-band failure, no BigQuery
+
+            assert "goodreads_mcp.telemetry_stdout" not in sys.modules, \\
+                "the stdout sink was imported under stdio transport"
+            sys.stdout.write("OK")
+            """
+        )
+        log = os.path.join(tmp, "t.jsonl")
+        proc = subprocess.run(
+            [sys.executable, "-c", code, log],
+            capture_output=True, text=True, timeout=120,
+        )
+        assert proc.returncode == 0, proc.stderr[-2000:]
+        assert proc.stdout == "OK", f"unexpected stdout: {proc.stdout[:300]!r}"
+        assert os.path.exists(log), "telemetry did not reach the file sink"
+
+
+def test_stdout_sink_emits_one_valid_json_object_per_line_under_http():
+    """
+    Cloud Logging parses one JSON object per line into jsonPayload and
+    promotes `severity`. Both are load-bearing, so both are asserted.
+    """
+    from goodreads_mcp import telemetry_stdout
+
+    telemetry.set_transport("http")
+    try:
+        buf = io.StringIO()
+        real, sys.stdout = sys.stdout, buf
+        try:
+            telemetry_stdout._write(
+                {"tool": "stats_by_author", "outcome": "guard_rejected",
+                 "duration_ms": 12.5, "guard_rule": "publish_day_banned"}
+            )
+            telemetry_stdout._write(
+                {"tool": "stats_by_year", "outcome": "ok", "duration_ms": 3.0}
+            )
+        finally:
+            sys.stdout = real
+    finally:
+        telemetry.set_transport("stdio")
+
+    lines = [l for l in buf.getvalue().splitlines() if l.strip()]
+    assert len(lines) == 2
+    first, second = (_json.loads(l) for l in lines)
+    assert first["severity"] == "WARNING"      # a rejection is a caller mistake
+    assert second["severity"] == "INFO"
+    assert first["guard_rule"] == "publish_day_banned"
+    assert "message" in first
+
+
+def test_http_transport_selects_the_stdout_sink():
+    telemetry.set_transport("http")
+    try:
+        from goodreads_mcp import telemetry_stdout
+        assert telemetry._SINK is telemetry_stdout._write
+    finally:
+        telemetry.set_transport("stdio")
+        assert telemetry._SINK is telemetry.write_to_file
+
+
+# --- deployment invariants ---------------------------------------------------
+
+
+def test_stdio_remains_the_default_transport():
+    """The existing local Claude Code registration must keep working unchanged."""
+    assert server._parse_args([]).transport == "stdio"
+    assert server._parse_args(["--transport", "http"]).transport == "http"
+
+
+def test_http_binds_all_interfaces_and_honours_PORT():
+    """Cloud Run requires listening on 0.0.0.0:$PORT."""
+    assert server._parse_args([]).host == "0.0.0.0"
+    prev = os.environ.get("PORT")
+    os.environ["PORT"] = "9137"
+    try:
+        assert server._parse_args([]).port == 9137
+    finally:
+        if prev is None:
+            os.environ.pop("PORT", None)
+        else:
+            os.environ["PORT"] = prev
+    assert server._parse_args([]).port == 8080 or prev is not None
+
+
+def test_streamable_http_not_sse():
+    """SSE is the legacy transport; the remote case must use streamable HTTP."""
+    src = inspect.getsource(server.main)
+    assert 'transport="http"' in src
+    assert "sse" not in src.replace("# ", "").lower() or 'transport="sse"' not in src
+    assert "stateless_http=True" in src, "Cloud Run cannot guarantee session affinity"
+
+
+def test_max_bytes_billed_survives_the_transport_change():
+    """
+    The cost ceiling is read from the environment and applied per job, so no
+    transport can bypass it. Pinned because it is the only thing standing
+    between a bad query and a large bill.
+    """
+    src = inspect.getsource(bq.run)
+    assert "maximum_bytes_billed=MAX_BYTES_BILLED" in src
+    assert bq.MAX_BYTES_BILLED > 0
+    # Nothing in the transport path may reference or rebind it.
+    assert "MAX_BYTES_BILLED" not in inspect.getsource(server.main)
+
+
+def test_health_route_is_registered_and_does_not_query_bigquery():
+    """A probe that queried would bill on every check and fail during a BQ incident."""
+    assert hasattr(server, "healthz")
+    src = inspect.getsource(server.healthz)
+    assert "bq.run" not in src and "client()" not in src
+
+
+def test_dockerfile_bakes_no_credentials_and_sets_the_cost_ceiling():
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, "Dockerfile"), encoding="utf-8") as fh:
+        raw = fh.read()
+    # Comments may *mention* the variable to explain why it is absent; what
+    # matters is that no directive sets it.
+    directives = "\n".join(
+        l for l in raw.splitlines() if l.strip() and not l.lstrip().startswith("#")
+    )
+    assert "GOOGLE_APPLICATION_CREDENTIALS" not in directives
+    assert "COPY" not in directives or "credentials" not in directives.lower()
+    dockerfile = directives
+    assert "GOODREADS_MAX_BYTES_BILLED" in dockerfile
+    assert "PYTHONUNBUFFERED=1" in dockerfile, "buffered stdout loses telemetry"
+    assert "USER 10001" in dockerfile, "must not run as root"
+
+
+def test_http_mode_keeps_stdout_purely_structured():
+    """
+    Under HTTP, stdout is the Cloud Logging channel: every line must be a
+    single JSON object or the entry lands as unstructured text. uvicorn's
+    access log defaults to stdout and would break that, so it is disabled --
+    this test is what stops it coming back.
+
+    Uses /healthz only, so it needs no BigQuery access.
+    """
+    import socket
+    import urllib.request
+
+    with socket.socket() as sk:
+        sk.bind(("127.0.0.1", 0))
+        port = sk.getsockname()[1]
+
+    env = {**os.environ, "GOODREADS_TRANSPORT": "http", "PORT": str(port),
+           "GOODREADS_TELEMETRY_SINK": "stdout", "GOODREADS_TELEMETRY": "1"}
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "goodreads_mcp"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+    )
+    try:
+        deadline = time.time() + 60
+        body = None
+        while time.time() < deadline:
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=2) as r:
+                    body = _json.loads(r.read())
+                break
+            except Exception:  # noqa: BLE001
+                if proc.poll() is not None:
+                    break
+                time.sleep(0.4)
+        assert body is not None, f"server never came up: {proc.stderr.read()[-1500:]}"
+        assert body["status"] == "ok" and body["transport"] == "http"
+        # The cost ceiling must survive the transport change.
+        assert body["max_bytes_billed"] == bq.MAX_BYTES_BILLED
+    finally:
+        proc.terminate()
+        out, _ = proc.communicate(timeout=30)
+
+    offenders = []
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        try:
+            _json.loads(line)
+        except _json.JSONDecodeError:
+            offenders.append(line[:120])
+    assert not offenders, f"non-JSON lines on stdout under HTTP: {offenders}"

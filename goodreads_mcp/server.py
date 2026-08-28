@@ -18,10 +18,15 @@ Design rules, enforced rather than documented:
 
 from __future__ import annotations
 
+import argparse
+import os
+import sys
 from typing import Annotated, Any
 
 from fastmcp import FastMCP
 from pydantic import Field
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from . import bq, caveats, telemetry
 from .queries import (
@@ -1189,8 +1194,112 @@ def compare_user_vs_book_ratings(
     )
 
 
-def main() -> None:
-    mcp.run()
+# --------------------------------------------------------------------------
+# Transport selection and startup
+# --------------------------------------------------------------------------
+
+
+@mcp.custom_route("/healthz", methods=["GET"])
+async def healthz(request: Request) -> JSONResponse:
+    """
+    Liveness probe. Deliberately does NOT touch BigQuery.
+
+    A health check that ran a query would bill money on every probe and would
+    fail the service during a BigQuery incident it could otherwise ride out --
+    the container is healthy even when its dependency is not.
+    """
+    return JSONResponse(
+        {
+            "status": "ok",
+            "service": "goodreads-mcp",
+            "transport": telemetry.transport(),
+            "max_bytes_billed": bq.MAX_BYTES_BILLED,
+        }
+    )
+
+
+def _warm_bigquery_client() -> None:
+    """
+    Build the BigQuery client during startup rather than on the first call.
+
+    Measured locally at ~1.5s, on top of ~1.1s of imports. Under HTTP on Cloud
+    Run that is paid by whoever calls first, which with min-instances is a real
+    user; moving it to startup takes it off the critical path. Not done for
+    stdio, where there is no cold-start-per-request problem and it would just
+    delay every local session by 1.5s.
+
+    Non-fatal: a server that cannot reach BigQuery should still start and
+    report the failure per call, not refuse to boot.
+    """
+    try:
+        bq.client()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[startup] BigQuery client warm-up failed: {exc!r}",
+              file=sys.stderr, flush=True)
+
+
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    ap = argparse.ArgumentParser(
+        prog="goodreads-mcp",
+        description="Goodreads statistics MCP server (stdio by default).",
+    )
+    ap.add_argument(
+        "--transport",
+        choices=telemetry.TRANSPORTS,
+        default=os.environ.get("GOODREADS_TRANSPORT", "stdio"),
+        help="stdio (default, local) or http (streamable HTTP, for Cloud Run).",
+    )
+    ap.add_argument(
+        "--host",
+        default=os.environ.get("HOST", "0.0.0.0"),
+        help="HTTP bind address. Ignored under stdio.",
+    )
+    ap.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("PORT", "8080")),
+        help="HTTP port. Cloud Run supplies $PORT. Ignored under stdio.",
+    )
+    return ap.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    """
+    Entry point for both transports.
+
+    stdio is the default and its behaviour is unchanged: no flag, no env var,
+    the same `python -m goodreads_mcp` a local Claude Code registration runs.
+    """
+    args = _parse_args(argv)
+
+    # Before anything can log: selects the telemetry sink, and under stdio
+    # keeps the stdout sink from ever being imported.
+    telemetry.set_transport(args.transport)
+
+    if args.transport == "stdio":
+        mcp.run()
+        return
+
+    _warm_bigquery_client()
+    # "http" is streamable HTTP in FastMCP 3.x; "sse" is the separate legacy
+    # transport and is deliberately not used. stateless_http avoids MCP
+    # sessions pinned to one instance, which Cloud Run cannot guarantee.
+    #
+    # access_log=False is load-bearing, not cosmetic: uvicorn's access log
+    # writes plain-text "INFO: ... 200 OK" lines to STDOUT, which would
+    # interleave with the JSON telemetry records and reach Cloud Logging as
+    # unstructured text entries. Cloud Run already logs every request with
+    # method, path, status and latency in its own httpRequest log, so this
+    # loses nothing and keeps stdout purely structured. show_banner likewise
+    # keeps startup art out of the log stream.
+    mcp.run(
+        transport="http",
+        host=args.host,
+        port=args.port,
+        stateless_http=True,
+        show_banner=False,
+        uvicorn_config={"access_log": False},
+    )
 
 
 if __name__ == "__main__":

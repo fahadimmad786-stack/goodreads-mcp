@@ -26,25 +26,49 @@ OUTCOMES = ("ok", "guard_rejected", "bq_error", "other_error")
 TRACKED_PARAMS = ("min_ratings", "unit")
 
 
-def load(path: Path, tool: str | None, since: str | None) -> tuple[list[dict], int]:
+def _records(text: str) -> tuple[list[dict], int]:
+    """
+    Accept both shapes the log arrives in.
+
+    JSONL is what the file sink writes. A JSON array is what
+    `gcloud logging read --format=json` emits for the Cloud Run sink, where
+    each entry wraps our line in `jsonPayload`.
+    """
+    stripped = text.lstrip()
+    if stripped.startswith("["):
+        entries = json.loads(stripped)
+        out = [e.get("jsonPayload", e) for e in entries if isinstance(e, dict)]
+        return [r for r in out if isinstance(r, dict)], 0
+
     rows: list[dict[str, Any]] = []
     malformed = 0
-    with open(path, encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                malformed += 1
-                continue
-            if tool and rec.get("tool") != tool:
-                continue
-            if since and str(rec.get("ts", "")) < since:
-                continue
-            rows.append(rec)
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            malformed += 1
     return rows, malformed
+
+
+def load(path: Path, tool: str | None, since: str | None) -> tuple[list[dict], int]:
+    """`path` of "-" reads stdin, so Cloud Logging output can be piped in."""
+    if str(path) == "-":
+        text = sys.stdin.read()
+    else:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+
+    rows, malformed = _records(text)
+    kept = [
+        r
+        for r in rows
+        if (not tool or r.get("tool") == tool)
+        and (not since or str(r.get("ts", "")) >= since)
+    ]
+    return kept, malformed
 
 
 def pct(part: int, whole: int) -> str:
@@ -191,14 +215,20 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="goodreads-telemetry", description="Summarise the goodreads-mcp telemetry log."
     )
-    ap.add_argument("--path", type=Path, default=None, help="log file (default: the server's)")
+    ap.add_argument(
+        "--path",
+        type=Path,
+        default=None,
+        help="log file, or - for stdin. Default: the server's local log. "
+             "For Cloud Run: gcloud logging read ... --format=json | %(prog)s --path -",
+    )
     ap.add_argument("--tool", default=None, help="only this tool")
     ap.add_argument("--since", default=None, help="only lines with ts >= this ISO8601 prefix")
     ap.add_argument("--json", action="store_true", help="emit the summary as JSON")
     args = ap.parse_args(argv)
 
     path = args.path or log_path()
-    if not path.exists():
+    if str(path) != "-" and not path.exists():
         print(f"no telemetry log at {path}", file=sys.stderr)
         return 1
 

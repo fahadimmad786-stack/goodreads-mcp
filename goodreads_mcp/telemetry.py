@@ -24,6 +24,13 @@ How that is guaranteed here:
 sys.stdout at the file-descriptor level around a real tool call and asserts it
 is empty.
 
+Under HTTP transport (Cloud Run) stdout is NOT the protocol channel, and Cloud
+Logging wants one JSON object per line there. That sink lives in a separate
+module, `telemetry_stdout`, which this one imports lazily and only when
+set_transport("http") has been called. The ban is therefore scoped by the
+import graph rather than relaxed: under stdio the stdout-writing code is never
+loaded into the process at all, which a subprocess test asserts directly.
+
 One JSON object per line, appended. Query *results* are never recorded -- only
 counts, timings and the BigQuery job metadata needed to tie a line back to
 `bq ls -j`. Rejected SQL is never recorded either: a guard rejection logs the
@@ -99,24 +106,81 @@ def record_query(
 
 
 # --------------------------------------------------------------------------
+# Transport, and the sink it selects
+# --------------------------------------------------------------------------
+#
+# The default is "stdio" -- the RESTRICTIVE mode. If set_transport() is never
+# called, telemetry goes to a file and the stdout sink stays unimported. A
+# missing call therefore fails safe rather than opening stdout.
+
+TRANSPORTS = ("stdio", "http")
+
+_TRANSPORT = "stdio"
+_SINK = None  # resolved on first use; set_transport() may replace it
+
+
+def transport() -> str:
+    """The transport this process is serving. Never guesses -- defaults to stdio."""
+    return _TRANSPORT
+
+
+def set_transport(name: str) -> None:
+    """
+    Record the transport and select the telemetry sink for it.
+
+    Called once at startup, before anything can log. Under "http" this is the
+    only place `telemetry_stdout` is imported; under "stdio" that module is
+    never loaded, so the stdout-writing code is not merely unused, it is
+    absent from the process.
+
+    GOODREADS_TELEMETRY_SINK overrides the choice ("file" or "stdout"), but
+    asking for "stdout" under stdio raises rather than corrupting the protocol.
+    """
+    global _TRANSPORT, _SINK
+    if name not in TRANSPORTS:
+        raise ValueError(f"transport must be one of {TRANSPORTS}, not {name!r}")
+    _TRANSPORT = name
+
+    requested = os.environ.get("GOODREADS_TELEMETRY_SINK") or (
+        "stdout" if name == "http" else "file"
+    )
+    if requested == "file":
+        _SINK = write_to_file
+    elif requested == "stdout":
+        from . import telemetry_stdout  # lazy: never imported under stdio
+
+        _SINK = telemetry_stdout.activate()
+    else:
+        raise ValueError(
+            f"GOODREADS_TELEMETRY_SINK must be 'file' or 'stdout', not {requested!r}"
+        )
+
+
+# --------------------------------------------------------------------------
 # Writing
 # --------------------------------------------------------------------------
 
 
-def write_line(payload: dict[str, Any]) -> None:
+def write_to_file(payload: dict[str, Any]) -> None:
     """
-    Append one JSON object. Never raises, never touches stdout.
+    Append one JSON object to the log file. Never touches stdout.
 
     Opened per write in append mode: line-sized appends to a local file are
     atomic enough for this, and holding a handle across a long-lived stdio
     server risks losing buffered lines if the client disconnects abruptly.
     """
+    path = log_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(payload, default=str, separators=(",", ":"))
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(line + "\n")
+
+
+def write_line(payload: dict[str, Any]) -> None:
+    """Emit one record through the active sink. Never raises."""
     try:
-        path = log_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        line = json.dumps(payload, default=str, separators=(",", ":"))
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
+        sink = _SINK or write_to_file
+        sink(payload)
     except Exception as exc:  # noqa: BLE001 -- telemetry must never break a call
         print(f"[telemetry] write failed: {exc!r}", file=sys.stderr, flush=True)
 

@@ -1,0 +1,25 @@
+# Keep credentials, local state and build noise out of the image context.
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+logs/
+.git/
+.gitignore
+
+# Never let a key file reach the build context, even by accident.
+*.json.key
+*-key.json
+service-account*.json
+application_default_credentials.json
+
+# Not needed at runtime.
+tests/
+clean_goodreads.py
+deploy.sh
+Dockerfile
+.dockerignore
+DATA_NOTES.md
+RULES.md
+CLAUDE.md

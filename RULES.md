@@ -354,6 +354,15 @@ Approximate aggregates are fine for a scan and wrong for a published figure —
 use the exact function when the number will be quoted, and label it if you
 cannot.
 
+**6.4b Latency and cost figures are figures too.** The rules above are written
+about dataset figures, but they apply to performance numbers quoted about this
+service. The pre-deployment p50 of 3,557 ms was measured against a 95% warm
+BigQuery cache produced by a smoke script replaying identical calls, and the
+cache is per-identity, so it does not transfer to the Cloud Run service
+account. Re-measure from production telemetry before quoting a latency
+baseline. See README "Latency figures measured before deployment are
+cache-inflated".
+
 **6.5 Correct every copy.** A figure usually appears in more than one of
 `DATA_NOTES.md`, `README.md`, `caveats.py` and this file. Grep for the old value
 before considering a correction finished.

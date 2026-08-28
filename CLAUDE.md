@@ -22,8 +22,10 @@ gcloud auth application-default login          # BigQuery uses ADC
 .venv/bin/python -m pytest tests/test_guards.py::test_work_key_preserves_ranges_and_drops_volume_numbers -q
 .venv/bin/python tests/smoke_live.py           # 18 live calls + a cache-miss probe, needs ADC
 
-# Run the server
+# Run the server (stdio is the default; local registration unchanged)
 .venv/bin/python -m goodreads_mcp
+.venv/bin/python -m goodreads_mcp --transport http --port 8080   # Cloud Run mode
+./deploy.sh                                    # Cloud Run; see README for the min-instances knob
 
 # Telemetry: one JSON line per tool call, at logs/telemetry.jsonl (gitignored)
 .venv/bin/goodreads-telemetry                  # summarise the log
@@ -76,6 +78,8 @@ The organising idea: **the dataset's defects are handled structurally, not by do
 ### Traps
 
 - **stdout is the MCP protocol channel — never write to it.** The server speaks JSON-RPC over stdio, so one stray byte on stdout corrupts framing and kills the connection silently: no error, no traceback. All diagnostics go to a file or `sys.stderr`. `test_no_server_module_can_reach_stdout` walks every package module's AST and fails on a `stdout` reference, a `print()` without `file=sys.stderr`, or any `logging.basicConfig` call. `telemetry_cli` is exempt — separate process, never imports the server.
+
+- **Two transports, one stdout rule.** stdio is the default and writes telemetry to a file; HTTP (Cloud Run) writes structured JSON to stdout for Cloud Logging. The ban is not relaxed for HTTP — it is scoped by the import graph: `telemetry_stdout` is imported *only* by `set_transport("http")`, so under stdio the stdout-writing code is never loaded. A subprocess test asserts that directly, and `activate()` refuses if the transport is stdio. Also note uvicorn's access log defaults to **stdout** and is disabled in HTTP mode — it would otherwise put plain text into the structured log stream.
 
 - **`guard()` regex-matches the SQL text**, so a query string mentioning `publish_day` or the bare `language` column throws `QueryGuardError` — *including inside a SQL comment*. Use `language_normalised`; `\b` deliberately does not match between `language` and `_normalised`.
 - **Several tests assert on source text** via `inspect.getsource(server)`. Renaming a helper or reformatting a `caveats.collect(...)` call can fail a test without changing behaviour. That is intentional — it is how "every tool reporting `pooled_rating` states the duplication caveat" is enforced — but expect it during refactors.

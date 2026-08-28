@@ -266,6 +266,144 @@ goodreads-telemetry                       # summary: calls, error rate, p50/p95,
 goodreads-telemetry --tool stats_by_author --json
 ```
 
+## Deploying to Cloud Run
+
+stdio remains the default and is unchanged — `python -m goodreads_mcp` with no
+flag behaves exactly as before, and an existing local Claude Code registration
+needs no edit. HTTP is a **second** transport, selected by `--transport http`
+or `GOODREADS_TRANSPORT=http`.
+
+```bash
+./deploy.sh                      # project example-project, region us-central1
+MIN_INSTANCES=0 ./deploy.sh      # override the warm-instance knob (see below)
+```
+
+### IAM: what the service account gets, and why
+
+`goodreads-mcp-run@example-project.iam.gserviceaccount.com` — **read-only**,
+**no key files**. Credentials come from the Cloud Run metadata server.
+
+| role | scope | why |
+|---|---|---|
+| `roles/bigquery.jobUser` | project | `bigquery.jobs.create`. Every query is a job. Must be project-scoped — job creation cannot be granted on a dataset. |
+| `roles/bigquery.dataViewer` | **dataset `goodreads` only** | `bigquery.tables.getData` / `tables.get` / `datasets.get`. Scoped to one dataset so the SA cannot read anything else in the project. |
+| `roles/logging.logWriter` | project | Container stdout → Cloud Logging, where telemetry goes in HTTP mode. Without it a custom runtime SA has its logs silently dropped. |
+
+Deliberately **not** granted: `roles/bigquery.user` (carries
+`datasets.create`, `reservations.use` and four `cloudkms.*` permissions) and
+`roles/bigquery.dataEditor` (write access). Keeping the SA read-only is also
+why telemetry goes to Cloud Logging rather than a BigQuery table.
+
+### Auth: the endpoint is not public
+
+Deployed `--no-allow-unauthenticated`. Unauthenticated requests get 403 at
+Google's edge before reaching the container. Connect through the authenticated
+local proxy:
+
+```bash
+gcloud run services proxy goodreads-mcp --region us-central1 --port 8080
+claude mcp add --transport http goodreads-remote http://127.0.0.1:8080/mcp
+```
+
+**Trade-off:** an extra local process and a gcloud dependency, and it only
+works where you are gcloud-authenticated — not Claude.ai web, not a teammate
+without a `roles/run.invoker` binding. In exchange there is no token in any
+config file, nothing to expire, and revocation is one binding removal.
+
+A static `Authorization: Bearer $(gcloud auth print-identity-token)` header
+also works with Claude Code, but those tokens last about an hour and, per
+Google's docs, lack an audience claim — worse on both ergonomics and security.
+
+Note `--ingress all` is intentional: "not public" here means IAM returns 403,
+not network unreachability. `--ingress internal` would break the proxy, which
+reaches the public URL *with* a token.
+
+### The min-instances knob
+
+`deploy.sh` sets `MIN_INSTANCES=1`. It is a knob, not a decision:
+
+| | first-call latency | idle cost |
+|---|---|---|
+| `MIN_INSTANCES=1` | no cold start | one always-on instance, billed at the idle CPU rate |
+| `MIN_INSTANCES=0` | **+3–5 s** on the first call after scale-to-zero | nothing |
+
+The cold-start figure comes from measuring this app's startup locally:
+**1,089 ms** to import `goodreads_mcp.server` and a further **1,545 ms** to
+construct the BigQuery client — 2,634 ms of Python before a query starts, plus
+container pull and start on top. `--cpu-boost` attacks that directly, and the
+client is warmed at startup (HTTP mode only) so the first real call does not
+pay the 1,545 ms.
+
+Reverting is one variable: `MIN_INSTANCES=0 ./deploy.sh`. Idle cost is on the
+order of tens of dollars a month for one small instance — **verify against the
+current [Cloud Run pricing](https://cloud.google.com/run/pricing) before
+committing; that figure is an estimate, not a measurement.**
+
+### Latency figures measured before deployment are cache-inflated
+
+> **Do not quote the pre-deployment p50 as a production baseline.**
+
+The p50 of 3,557 ms and p95 of 6,457 ms in this repo's telemetry were measured
+locally on **2026-08-28** with a **95% BigQuery cache hit rate**, produced by a
+smoke script issuing the same calls repeatedly. They understate real latency,
+for two compounding reasons:
+
+1. **The cache is per-identity.** Google's docs: *"Temporary, cached results
+   tables are maintained per-user, per-project."* Cross-user caching needs
+   Enterprise edition. The Cloud Run service account is a different identity
+   from your local ADC, so it starts with an empty cache and builds its own.
+2. **Real traffic varies parameters.** Cache keys include parameter values.
+   Model-driven calls varying `min_ratings`, `limit` and `unit` will miss far
+   more often than a smoke script replaying identical calls.
+
+The cache *does* work across Cloud Run instances — every instance runs as the
+same service account, so scaling out does not fragment it. Entries expire after
+about 24 hours.
+
+**Re-measure from production telemetry before anyone quotes a latency number.**
+A cache hit bills 0 bytes, so the existing tooling already reports the real
+rate:
+
+```bash
+gcloud logging read \
+  'resource.type=cloud_run_revision AND resource.labels.service_name=goodreads-mcp AND jsonPayload.tool!=""' \
+  --project example-project --limit 1000 --format json \
+  | goodreads-telemetry --path -
+```
+
+See `RULES.md` §6 — this is the same discipline the dataset figures are held to.
+
+### Telemetry in Cloud Run
+
+HTTP mode switches the sink from the local file to **structured JSON on
+stdout**, which Cloud Logging parses into `jsonPayload` and levels by the
+`severity` field (`ok` → INFO, `guard_rejected` → WARNING, errors → ERROR).
+
+stdout must stay purely structured for that to work, which is why uvicorn's
+access log is disabled — it writes plain-text `INFO: ... 200 OK` lines to
+stdout that would land as unstructured entries. Nothing is lost: Cloud Run
+logs every request itself, with more structure. A test fails if a non-JSON
+line appears on stdout in HTTP mode.
+
+Retention is the `_Default` bucket's 30 days. If SQL access over telemetry is
+ever wanted, add a **Logging sink to BigQuery** — that writes as a
+Google-managed identity and keeps the runtime SA read-only.
+
+### Health check
+
+`GET /healthz` returns status, transport and the active
+`max_bytes_billed`. It deliberately does not touch BigQuery: a probe that
+queried would bill on every check and would fail the service during a
+BigQuery incident the container could otherwise ride out.
+
+### `GOODREADS_MAX_BYTES_BILLED` survives the transport change
+
+Read from the environment in `bq.py` and applied per job as
+`QueryJobConfig(maximum_bytes_billed=...)`. Nothing in either transport path
+touches it. It is set explicitly in the Dockerfile and the deploy script rather
+than relying on the 20 GiB default, surfaced by `/healthz`, and pinned by a
+test.
+
 ## Tests
 
 ```bash
