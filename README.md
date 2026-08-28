@@ -117,7 +117,7 @@ the suffix from one without it — a regression `title_norm()` did not have.
 depending on publication vs chronological order, and must stay merged.
 
 Effect at ≥100 ratings: work keys merging two distinct ranges went **3 → 0**,
-and a further 95 keys that mixed a ranged title with a bare one now split.
+and a further 92 keys that mixed a ranged title with a bare one now split.
 
 ### Why `authors` is not in the key
 
@@ -146,8 +146,8 @@ Against that, the benefit is small and shrinking:
 - **`stats_by_author` is structurally immune** — it groups by author *before*
   collapsing, so a collision can never cross authors there. This is the tool
   the `works` unit was added for.
-- Grouping separates most of the rest: only **719** of 7,749 collide inside a
-  single publisher, **1,620** inside a single year.
+- Grouping absorbs most of the rest: only **756** (work key, publisher) groups
+  and **1,913** (work key, year) groups merge more than one author string.
 - `top_books_by_rating` is the only tool partitioning on `work_key` alone, and
   exposure falls with the threshold — 11.2% of keys at `min_ratings=100`, 4.0%
   at 5,000, and **0 of the top 50 works at 5,000**.

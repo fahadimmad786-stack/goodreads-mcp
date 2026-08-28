@@ -2,6 +2,14 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Read RULES.md first
+
+**`RULES.md` governs every figure that leaves this project** — MCP tool output, ad-hoc `bq` queries, charts, and sentences in reports alike. Read it before producing or quoting any number from this dataset, not just before editing the server.
+
+The split: `DATA_NOTES.md` records *what* the defects are, `RULES.md` says *what you may do about them*. It carries hard bans that no caveat or disclaimer makes acceptable (`publish_day`, bare `language`, unfiltered `AVG(rating)`, `SUM(rating_dist_total)` presented as a rating count, unthresholded rankings), the three things every figure must carry (its n, its unit, what the threshold excluded), and a pre-flight checklist to run before a figure ships.
+
+It matters most **outside** the server. `bq.run()` enforces these rules in code; the `bq` CLI enforces nothing, so an ad-hoc query is unguarded by construction. Use `bq` to check the server's homework, not to produce reported figures — and if a `bq` figure does reach a report, every rule has to be applied by hand.
+
 ## Commands
 
 ```bash

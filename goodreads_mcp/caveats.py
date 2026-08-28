@@ -133,7 +133,7 @@ _add(
     "rating_skew",
     "DATA_NOTES.md #7",
     """Ratings per book are extremely skewed: the median book has 5 ratings,
-    the 90th percentile has 523, and the maximum is 7,094,687. Without a
+    the 90th percentile has 524, and the maximum is 7,094,687. Without a
     minimum-ratings threshold a "highest rated" list returns obscure books
     holding a single 5-star rating. Raise min_ratings to tighten the result.""",
 )

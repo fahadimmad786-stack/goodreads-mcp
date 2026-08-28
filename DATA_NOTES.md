@@ -41,7 +41,7 @@ Both match the cleaning report exactly; no rows were dropped by the load.
 | `publisher` | STRING | Free text. Not normalised: `Penguin`, `Penguin Books`, `Penguin Classics` are distinct values. |
 | `language` | STRING | Raw value as scraped. Inconsistent (`eng`, `en-US`, `en-GB`). |
 | `language_normalised` | STRING | Derived. Collapsed to a base ISO code. **Group by this, not `language`.** |
-| `pages_number` | INTEGER | 11,217 implausible values were nulled. |
+| `pages_number` | INTEGER | Implausible values were nulled; 11,216 rows are NULL in the loaded table. (The cleaning report said 11,217 — the loaded table is the authority.) |
 | `rating_dist_1` … `rating_dist_5` | INTEGER | Count of ratings at each star level. Parsed from strings like `"5:1546466"`. |
 | `rating_dist_total` | INTEGER | Total ratings. Parsed from `"total:2298124"`. |
 | `counts_of_review` | INTEGER | Review count. |
@@ -155,7 +155,7 @@ Either state this in the tool output or apply grouping/fuzzy matching first.
 ### 6. NULLs must be excluded explicitly in aggregates
 
 `count_of_text_reviews` (mostly NULL), `description` (37% NULL) and
-`pages_number` (11,217 nulled) will silently skew averages. Filter with
+`pages_number` (11,216 NULL) will silently skew averages. Filter with
 `WHERE <col> IS NOT NULL` and report the row count the statistic is based on.
 
 ### 7. Ratings-per-book is heavily skewed
