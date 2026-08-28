@@ -1,0 +1,25 @@
+[project]
+name = "goodreads-mcp"
+version = "0.1.0"
+description = "MCP server for statistical questions about the Goodreads BigQuery dataset"
+requires-python = ">=3.10"
+dependencies = [
+    "fastmcp>=2.0",
+    "google-cloud-bigquery>=3.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+goodreads-mcp = "goodreads_mcp.server:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["goodreads_mcp*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
