@@ -235,6 +235,6 @@ into eleven tools that would otherwise look authoritative.
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest tests/ -q        # 30 offline invariant tests
-PYTHONPATH=. .venv/bin/python tests/smoke_live.py   # 13 live calls, needs ADC
+.venv/bin/python -m pytest tests/ -q        # 42 offline invariant tests
+PYTHONPATH=. .venv/bin/python tests/smoke_live.py   # 18 live calls, needs ADC
 ```

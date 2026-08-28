@@ -1,0 +1,75 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Commands
+
+```bash
+# Setup
+python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
+gcloud auth application-default login          # BigQuery uses ADC
+
+# Tests
+.venv/bin/python -m pytest tests/ -q           # 42 offline invariant tests, no network
+.venv/bin/python -m pytest tests/test_guards.py::test_work_key_preserves_ranges_and_drops_volume_numbers -q
+.venv/bin/python tests/smoke_live.py           # 18 live BigQuery calls, needs ADC
+
+# Run the server
+.venv/bin/python -m goodreads_mcp
+```
+
+`pytest` only collects `tests/`; `smoke_live.py` is a script, not a pytest module, and bills real BigQuery queries.
+
+Ad-hoc BigQuery exploration is easiest with the `bq` CLI, which bypasses the query guards described below:
+
+```bash
+bq query --nouse_legacy_sql --format=prettyjson 'SELECT ... FROM `example-project.goodreads.books`'
+```
+
+Env overrides: `GOODREADS_BQ_PROJECT`, `GOODREADS_BQ_DATASET`, `GOODREADS_BQ_LOCATION`, `GOODREADS_MAX_BYTES_BILLED` (default 20 GiB).
+
+## Architecture
+
+An MCP server (FastMCP) exposing twelve **aggregate-only** tools over two BigQuery tables: `goodreads.books` (1,850,115 rows) and `goodreads.user_ratings` (357,396 rows from 4,154 users). There is deliberately no row-browsing tool.
+
+The organising idea: **the dataset's defects are handled structurally, not by documentation.** A caller who never reads `DATA_NOTES.md` still cannot get a wrong number. Four layers, each enforcing something the layer above cannot bypass:
+
+- **`bq.py`** — the only path to BigQuery. `run()` calls `guard()` on every query, so guards cannot be bypassed by writing a new tool. All values are named parameters; every job is cost-capped.
+- **`queries.py`** — shared SQL fragments, parameter validators, and `envelope()`, the shape every tool returns. Anything true of more than one tool lives here so it is stated once.
+- **`caveats.py`** — a registry keyed by id. Tools name the ids for the code path they took; they never write caveat prose inline. An unknown id raises rather than silently dropping a warning. Each entry is tagged `[DATA_NOTES.md #n]` or `[measured]` (found by profiling, absent from the notes).
+- **`server.py`** — the tools. Each validates params, builds SQL from `queries.py` fragments, and returns `envelope(...)`.
+
+`clean_goodreads.py` is the one-shot script that produced the BigQuery tables from the Kaggle dump. It does not run at serve time, but SQL here sometimes has to reproduce its logic exactly — see the title keys below.
+
+### Invariants worth knowing before editing
+
+**Two title keys, and they are not interchangeable.** This is the easiest thing to get wrong.
+
+| | used for | series suffix |
+|---|---|---|
+| `title_norm()` | the `user_ratings` join **only** | stripped entirely |
+| `work_key()` | all work-level dedup, `n_distinct_titles` | **range kept** (`#1-5`), volume number dropped (`#2`) |
+
+`title_norm()` must reproduce the cleaning script's `book_title_normalised` exactly or the documented 52,016-title join coverage breaks — do not change it. `work_key()` exists because stripping the whole suffix merges different products (the four Harry Potter boxed sets). `test_only_the_join_uses_title_norm` fails if any non-join path reaches `title_norm`.
+
+**`envelope()` is mandatory and `n` is keyword-only.** No average leaves this server without the count it rests on, plus what the threshold excluded.
+
+**`min_ratings` is floored at 1, never 0.** 451,777 books have no ratings and are stored as `rating = 0.0`; at 0 they enter every average.
+
+**Grouped tools take `unit="editions" | "works"`.** A row in `books` is an edition. `stats_by_author` defaults to `"works"` (most-read author is a question about works); everything else defaults to `"editions"`. Both branches emit identical column names so `order_by` and the envelope are unaffected. `_grouped()` in `server.py` branches on it; `_unit_caveats()` maps the choice onto caveat ids.
+
+### Traps
+
+- **`guard()` regex-matches the SQL text**, so a query string mentioning `publish_day` or the bare `language` column throws `QueryGuardError` — *including inside a SQL comment*. Use `language_normalised`; `\b` deliberately does not match between `language` and `_normalised`.
+- **Several tests assert on source text** via `inspect.getsource(server)`. Renaming a helper or reformatting a `caveats.collect(...)` call can fail a test without changing behaviour. That is intentional — it is how "every tool reporting `pooled_rating` states the duplication caveat" is enforced — but expect it during refactors.
+- **FastMCP wraps tool functions.** To call one directly, use `getattr(tool, "fn", tool)`, as `tests/smoke_live.py` does.
+- **Editions repeat their work's ratings.** Under `unit="editions"`, `SUM(rating_dist_total)` overcounts ~2.4×, because each edition carries most of its work's rating pool. Under `"works"` the collapse takes the *maximum* edition total, so `n_ratings` is a floor, not an exact work total.
+
+### DATA_NOTES.md
+
+The dataset-defect reference, and the source for `[DATA_NOTES.md #n]` caveats. It is authoritative but has contained errors; corrections are recorded inline in the file and in the README's measured-defects list. Two that matter:
+
+- `publish_day` is **48.25%** placeholder, not the 73.6% originally stated — that was a denominator error (73.60% is the rate within the 1,212,960-row ambiguous subset), not a stale measurement.
+- The 13.6% `language_normalised` coverage is a property of the source dump, not of cleaning: `normalise_language()` nulls only 13 rows.
+
+When profiling turns up a defect the notes do not mention, add it to `caveats.py` tagged `[measured]` and to the README's measured-defects list rather than silently working around it.
