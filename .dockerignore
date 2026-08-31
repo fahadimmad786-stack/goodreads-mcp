@@ -14,8 +14,18 @@ logs/
 service-account*.json
 application_default_credentials.json
 
+# Local secrets, never in a build context.
+.env
+
 # Not needed at runtime.
+#
+# webchat/ is deliberately NOT listed: this file is per-context, not per
+# Dockerfile, and webchat/Dockerfile builds from this same root. Excluding it
+# would break the chat image. It stays out of the MCP server's image because
+# that Dockerfile copies only pyproject.toml, README.md and goodreads_mcp/ --
+# the private service carries none of the public one's code or dependencies.
 tests/
+deploy-chat.sh
 clean_goodreads.py
 deploy.sh
 Dockerfile

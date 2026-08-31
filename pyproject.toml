@@ -10,17 +10,24 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+# The web console only. The MCP server's image never installs these, so the
+# Anthropic SDK is absent from the service that holds BigQuery access.
+web = ["anthropic>=1.0", "starlette>=0.37", "uvicorn>=0.30"]
 
 [project.scripts]
 goodreads-mcp = "goodreads_mcp.server:main"
 goodreads-telemetry = "goodreads_mcp.telemetry_cli:main"
+goodreads-chat = "webchat.app:main"
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["goodreads_mcp*"]
+include = ["goodreads_mcp*", "webchat*"]
+
+[tool.setuptools.package-data]
+webchat = ["static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

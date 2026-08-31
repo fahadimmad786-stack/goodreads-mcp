@@ -340,12 +340,32 @@ def envelope(
 
 
 def merge_meta(*metas: dict) -> dict:
-    """Combine per-job meta from the queries backing one tool call."""
-    out = {"bytes_processed": 0, "bytes_billed": 0, "queries": 0}
+    """
+    Combine per-job meta from the queries backing one tool call.
+
+    `cache_hits` and `bq_ms` are carried here as well as into telemetry
+    because telemetry is not readable from the response path: under the HTTP
+    transport it goes to stdout for Cloud Logging, so a caller holding only
+    the envelope has no other way to see what a figure cost or whether
+    BigQuery served it from cache. Reported per tool call, not per job --
+    `cache_hits` counts how many of `queries` were cache hits, so 2/2 and 1/2
+    are distinguishable rather than collapsing to a single boolean.
+    """
+    out = {
+        "bytes_processed": 0,
+        "bytes_billed": 0,
+        "queries": 0,
+        "cache_hits": 0,
+        "bq_ms": 0.0,
+    }
     for m in metas:
         out["bytes_processed"] += m.get("bytes_processed") or 0
         out["bytes_billed"] += m.get("bytes_billed") or 0
         out["queries"] += 1
+        if m.get("cache_hit"):
+            out["cache_hits"] += 1
+        out["bq_ms"] += m.get("bq_ms") or 0.0
+    out["bq_ms"] = round(out["bq_ms"], 2)
     return out
 
 

@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>goodreads-stats console</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+
+<header class="masthead">
+  <div>
+    <h1>goodreads-stats</h1>
+    <p>aggregate-only MCP server over BigQuery — every figure carries its n, its unit and its caveats</p>
+  </div>
+  <div class="masthead-status">
+    <span class="dot" id="status-dot"></span>
+    <span id="status">connecting…</span>
+  </div>
+</header>
+
+<main id="thread">
+  <section class="intro" id="intro">
+    <h2>Ask a statistical question about 1.85M Goodreads editions.</h2>
+    <p>
+      A model chooses the tool and writes the explanation. It does not write the
+      numbers: every figure below is rendered from the tool's own JSON, together
+      with the count it rests on, the unit one row counts, what the minimum-ratings
+      threshold excluded, and the caveats attached to the specific columns they
+      weaken.
+    </p>
+    <ul>
+      <li>The tool call is shown in full — name, parameters, bytes billed, cache hit or miss, and the BigQuery share of the wall time.</li>
+      <li>A refused call is a result, not an error. Asking for something the dataset cannot support tells you why it cannot.</li>
+      <li>A checker marks any numeral in the prose that does not appear in a tool result, so the interface's central claim is verifiable rather than asserted.</li>
+    </ul>
+  </section>
+</main>
+
+<footer class="composer">
+  <div class="composer-inner">
+    <div class="examples" id="examples"></div>
+    <div class="row">
+      <textarea id="input" rows="1" placeholder="Ask about the dataset…"
+                aria-label="Ask about the dataset"></textarea>
+      <button id="send" type="button">ask</button>
+    </div>
+    <div class="footnote">enter sends · shift+enter for a new line</div>
+  </div>
+</footer>
+
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>

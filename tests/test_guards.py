@@ -814,3 +814,48 @@ def test_http_mode_keeps_stdout_purely_structured():
         except _json.JSONDecodeError:
             offenders.append(line[:120])
     assert not offenders, f"non-JSON lines on stdout under HTTP: {offenders}"
+
+
+# --- query_meta carries the cache and timing split -------------------------
+#
+# The web console shows cache hit/miss and the BigQuery share of a tool call's
+# wall time. Telemetry records both, but telemetry is not readable from the
+# response path -- under HTTP it goes to stdout for Cloud Logging -- so
+# merge_meta carries them in the envelope as well.
+
+
+def test_merge_meta_reports_cache_hits_and_bq_time_per_call():
+    merged = queries.merge_meta(
+        {"bytes_processed": 10, "bytes_billed": 20, "cache_hit": True, "bq_ms": 100.5},
+        {"bytes_processed": 5, "bytes_billed": 10, "cache_hit": False, "bq_ms": 49.25},
+    )
+    assert merged["queries"] == 2
+    assert merged["bytes_billed"] == 30
+    assert merged["bytes_processed"] == 15
+    # Counted, not collapsed to a boolean: 1-of-2 must stay distinguishable
+    # from 2-of-2, or a partly-cached tool call reads as fully cached.
+    assert merged["cache_hits"] == 1
+    assert merged["bq_ms"] == 149.75
+
+
+def test_merge_meta_tolerates_missing_keys():
+    """A meta dict without cache_hit or bq_ms must not raise or poison sums."""
+    merged = queries.merge_meta({"bytes_billed": 1}, {})
+    assert merged == {
+        "bytes_processed": 0,
+        "bytes_billed": 1,
+        "queries": 2,
+        "cache_hits": 0,
+        "bq_ms": 0.0,
+    }
+
+
+def test_bq_run_supplies_every_key_merge_meta_reads():
+    """
+    merge_meta's inputs come from bq.run()'s meta dict. Assert the contract
+    between them at the source level, so renaming a key in run() fails here
+    rather than silently zeroing the console's cache column.
+    """
+    src = inspect.getsource(bq.run)
+    for key in ("bytes_processed", "bytes_billed", "cache_hit", "bq_ms"):
+        assert f'"{key}"' in src, f"bq.run() no longer reports {key}"

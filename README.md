@@ -441,9 +441,184 @@ touches it. It is set explicitly in the Dockerfile and the deploy script rather
 than relying on the 20 GiB default, surfaced by `/healthz`, and pinned by a
 test.
 
+## The web console (`webchat/`)
+
+A browser chat interface for the same twelve tools, deployed as a **second**
+Cloud Run service, `goodreads-chat`. It exists to make the server's central
+property visible: figures arrive with their limits attached.
+
+```bash
+# local, against a proxy.sh tunnel already running on 127.0.0.1:8080
+export ANTHROPIC_API_KEY=sk-ant-...
+export CHAT_ACCESS_TOKEN="$(openssl rand -hex 24)"
+export CHAT_COOKIE_SECURE=0                 # plain-HTTP localhost only
+.venv/bin/pip install -e '.[web]'
+.venv/bin/goodreads-chat                    # http://127.0.0.1:8081/?k=$CHAT_ACCESS_TOKEN
+
+./deploy-chat.sh                             # Cloud Run; prints the ?k= URL
+```
+
+### Why a backend-for-frontend, and why an MCP client
+
+A browser cannot call the server directly: MCP is JSON-RPC and the Cloud Run
+service is `--no-allow-unauthenticated`. The console is therefore a BFF holding
+two credentials the client never sees — a Google identity token for Cloud Run
+and an Anthropic API key.
+
+It connects as an **MCP client** rather than mirroring the tool definitions.
+Tool schemas come from `tools/list` and the model's steering text from the
+server's own `instructions`, so a docstring edit in `server.py` reaches the UI
+on the next deploy. Mirroring would make the UI a hand-maintained copy of the
+tool surface, which is the documentation-instead-of-structure failure the whole
+project is built to avoid.
+
+The Anthropic **MCP connector** (`mcp_servers=[{type:"url", ...}]`) was rejected
+for two independent reasons: it would require either making the MCP service
+publicly invokable or handing a Google identity token to a third party, and it
+delivers tool results into the model's context rather than to the BFF, which
+would make structural rendering of the figures impossible.
+
+### Two services, because they need opposite IAM postures
+
+The console must be reachable by browsers, which carry no Google identity; the
+MCP server must stay private. One Cloud Run service has one IAM policy, so one
+service cannot be both. Everything else follows from that split:
+
+| | `goodreads-mcp` | `goodreads-chat` |
+|---|---|---|
+| ingress | `--no-allow-unauthenticated` | `--allow-unauthenticated` + shared token |
+| service account | `goodreads-mcp-run` | `goodreads-chat-run` |
+| BigQuery | `roles/bigquery.jobUser` | **none** |
+| secrets | none | one Anthropic key |
+| image | root `Dockerfile` | `webchat/Dockerfile` |
+
+`deploy-chat.sh` adds exactly two IAM bindings: `roles/run.invoker` on
+`goodreads-mcp` for the console's service account, and
+`roles/secretmanager.secretAccessor` on the two secrets. It grants **no**
+BigQuery role — the console reaches BigQuery only as a consequence of a guarded
+tool call running under the MCP service's identity — and no
+`iam.serviceAccountTokenCreator`, because minting an ID token for its *own*
+identity from the metadata server requires no role. That last one is the usual
+place this gets over-granted.
+
+### Auth flow
+
+1. **Browser → console.** No Google identity. A shared secret
+   (`CHAT_ACCESS_TOKEN`, from Secret Manager) presented as `?k=` on first visit,
+   then held in an `HttpOnly` cookie. The token is required: the service refuses
+   to start without one, with no override flag, because a public endpoint that
+   bills an Anthropic account on every turn is not an acceptable default.
+2. **Console → MCP server.** An OIDC identity token minted from the metadata
+   server for `audience = <the MCP service's base URL>`, cached until five
+   minutes before it expires, sent as `Authorization: Bearer`. Google's edge
+   validates the signature, the audience and `roles/run.invoker` before the
+   request reaches the container.
+3. **Console → Anthropic.** `ANTHROPIC_API_KEY` from Secret Manager via
+   `--set-secrets`, never `--set-env-vars`, never in the image or the repo.
+
+Locally the default is the `proxy.sh` path: `GOODREADS_MCP_URL` points at
+`127.0.0.1:8080` and the console sends no credential of its own, because
+`gcloud run services proxy` injects one. Setting `GOODREADS_MCP_TOKEN`
+(from `gcloud auth print-identity-token`) is the direct alternative; setting
+both it and an audience is a startup error rather than a silent precedence rule.
+
+Neither credential is ever placed in an SSE frame or a log line, and transport
+error text is scrubbed of `Authorization` before it reaches a client.
+
+### Spend ceilings
+
+The console is public-by-URL, so the abuse surface is the Anthropic bill rather
+than IAM: a required access token, ten turns per IP per five minutes,
+twenty-five turns per session, six tool calls per turn, `--max-instances 3`,
+and the server's existing 20 GiB `maximum_bytes_billed` per query.
+
+### The rendering contract, and how it is enforced
+
+The model never renders a figure. Every number on screen is drawn by
+`webchat/static/cards.js` from the tool's own envelope, together with its `n`,
+the unit one row counts, the min-ratings threshold and what it excluded, the
+caveats, and the query cost. Nothing is computed client-side: if a share is not
+in the envelope it is not shown, because a derived figure would be a figure
+with no caveats attached to it.
+
+`webchat/numcheck.py` checks that the model kept to it. Every numeral in the
+prose is canonicalised and looked up in the set of numerals the server actually
+put in front of the session — tool results including caveat prose, tool
+parameters, the server's `instructions`, and the user's own question. Anything
+else is marked in place in the answer. A rounded figure fails by construction:
+`4.4` does not match `4.42`. The check reports rather than blocks; suppressing
+the answer would hide the violation instead of showing it.
+
+Caveats attach to **fields**, not to the card. `webchat/attach.py` maps each
+caveat id to the figure fields it qualifies, so the duplication caveat puts a
+marker on `n_ratings` and `pooled_rating` specifically, and the caveat text sits
+in the same card, always expanded — never a footnote, never behind a disclosure
+triangle. `test_every_registered_caveat_has_a_field_mapping` fails if a caveat
+is added to the server without one.
+
+### `check_column_available`: a demonstration probe
+
+`QueryGuardError` is unreachable from the twelve tools by construction — no tool
+interpolates a caller-supplied column into SQL — so a user asking about
+`publish_day` gets nothing from the guard, because there is no tool through
+which to ask. That is the design working, not a gap (see CLAUDE.md).
+
+So the console carries one tool of its own, `check_column_available`, which runs
+the server's real `bq.guard()` against a candidate query it never executes and
+reports the verdict, the rule id and the server's own caveat prose for that
+column. It is labelled **`bff` / demonstration probe** in the UI, distinct from
+the `mcp` badge every real tool carries, and it is deliberately not a thirteenth
+MCP tool: adding a tool parameter that reached a banned column would convert a
+structural impossibility into a runtime rejection.
+
+### Refusals come from two layers, and the console distinguishes them
+
+Live testing turned up something the offline tests cannot see, because they call
+tool functions directly and so bypass the schema:
+
+| layer | fires for | reaches the caller as |
+|---|---|---|
+| tool schema (FastMCP/pydantic) | anything with a `Field(ge=…)` bound — `min_ratings`, `min_books`, `limit` | a validation error, before the tool body runs |
+| `ParamError` → `_fail()` | the unconstrained parameters — `unit`, `order_by`, `direction`, empty `language`, `year_from > year_to` | a structured result carrying the server's full explanation |
+
+So `min_ratings=0` — the most instructive refusal in the server — never reaches
+`require_min_ratings()` over MCP, and the validation error says only "Input
+should be greater than or equal to 1", not why the floor exists. The console
+renders that as its own refusal kind (`schema`) and re-attaches the server's
+reasoning from the caveat registry, so the reader still gets the 451,777
+unrated books. It re-attaches; it does not write a second explanation.
+
+Both layers are wanted. The body validator is what protects a direct Python
+caller and what carries the prose, so neither was removed or loosened to make
+the console simpler.
+
+### Design notes
+
+One accent (`#2a78d6` light, `#3987e5` dark — validated for lightness, chroma
+and 3:1 contrast against both surfaces) plus one reserved status ink for
+refusals and placeholder-inflated rows. Charts are hand-rolled inline SVG: no
+library, so every bar carries its own exact value and nothing is read off an
+axis. Two measures never share an axis — `stats_by_year` draws volume and rating
+as two stacked charts rather than one dual-axis chart. The masthead carries no
+dataset figures at all; every number about the data appears inside a tool card,
+from that tool's JSON.
+
+Conversation history is held server-side in memory, keyed by an `HttpOnly`
+cookie, rather than posted back by the client each turn. That is a correctness
+choice: a client that supplied the history could forge tool results into the
+model's context, and fabricated figures in history is exactly the failure this
+project exists to prevent. The cost is that an instance recycle loses the
+transcript — the console says so rather than continuing against an empty one.
+
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest tests/ -q        # 50 offline invariant tests
+.venv/bin/python -m pytest tests/ -q        # offline invariant tests, no network
 PYTHONPATH=. .venv/bin/python tests/smoke_live.py   # 18 live calls + probe, needs ADC
 ```
+
+`tests/test_guards.py` covers the dataset's rules; `tests/test_webchat.py`
+covers the console's three claims — that every caveat can be attached to the
+figure it qualifies, that no numeral in the model's prose escapes the checker,
+and that no credential can reach a client — plus the access control and the
+independence of the two packages in both directions.

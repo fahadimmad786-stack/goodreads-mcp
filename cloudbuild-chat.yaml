@@ -1,0 +1,14 @@
+# Builds the chat service image from the repository root with webchat's own
+# Dockerfile. `gcloud run deploy --source` always uses ./Dockerfile, which
+# belongs to the MCP server, so the chat image gets an explicit build step.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --file=webchat/Dockerfile
+      - --tag=${_IMAGE}
+      - .
+images:
+  - ${_IMAGE}
+options:
+  logging: CLOUD_LOGGING_ONLY

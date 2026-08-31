@@ -1,0 +1,225 @@
+#!/usr/bin/env bash
+#
+# Deploy goodreads-chat to Cloud Run: the public web console in front of the
+# private MCP server.
+#
+# Two services, deliberately. This one must be reachable by a browser, which
+# has no Google identity; goodreads-mcp must stay --no-allow-unauthenticated.
+# One Cloud Run service has one IAM policy, so they cannot be the same service.
+#
+# The IAM delta this script adds is exactly two bindings:
+#
+#   * this service's SA gets roles/run.invoker on goodreads-mcp -- the only new
+#     access to the private service;
+#   * this service's SA gets roles/secretmanager.secretAccessor on one secret.
+#
+# It gets NO BigQuery role. It reaches BigQuery only as a consequence of an MCP
+# tool call, executed under the MCP service's own identity, through the guarded
+# tool surface. It also gets no iam.serviceAccountTokenCreator: minting an ID
+# token for its OWN identity from the metadata server needs no role, and that
+# is the usual place this gets over-granted.
+#
+# Idempotent: re-running builds a new image, deploys a new revision and
+# re-asserts the bindings.
+
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+PROJECT="${PROJECT:-example-project}"
+REGION="${REGION:-us-central1}"
+SERVICE="${SERVICE:-goodreads-chat}"
+MCP_SERVICE="${MCP_SERVICE:-goodreads-mcp}"
+
+SA_NAME="${SA_NAME:-goodreads-chat-run}"
+SA="${SA_NAME}@${PROJECT}.iam.gserviceaccount.com"
+
+REPO="${REPO:-goodreads}"
+IMAGE="${IMAGE:-${REGION}-docker.pkg.dev/${PROJECT}/${REPO}/${SERVICE}:latest}"
+
+# Secret Manager secret holding the Anthropic API key. Created by this script
+# from $ANTHROPIC_API_KEY on first run if it does not exist.
+KEY_SECRET="${KEY_SECRET:-anthropic-api-key}"
+# Secret Manager secret holding the console's shared access token. Generated on
+# first run if absent -- the console refuses to start without one.
+ACCESS_SECRET="${ACCESS_SECRET:-chat-access-token}"
+
+# Spend ceilings. max-instances is the blunt one: the console is public, and
+# every turn costs Anthropic tokens and BigQuery bytes.
+MIN_INSTANCES="${MIN_INSTANCES:-0}"
+MAX_INSTANCES="${MAX_INSTANCES:-3}"
+CPU="${CPU:-1}"
+MEMORY="${MEMORY:-512Mi}"
+CHAT_MAX_TOOL_CALLS="${CHAT_MAX_TOOL_CALLS:-6}"
+CHAT_MAX_TURNS="${CHAT_MAX_TURNS:-25}"
+CHAT_RATE_LIMIT_TURNS="${CHAT_RATE_LIMIT_TURNS:-10}"
+CHAT_RATE_LIMIT_WINDOW="${CHAT_RATE_LIMIT_WINDOW:-300}"
+
+echo "project=${PROJECT} region=${REGION} service=${SERVICE}"
+echo "mcp service=${MCP_SERVICE}  max-instances=${MAX_INSTANCES}"
+echo
+
+# ---------------------------------------------------------------------------
+# The MCP service must already exist: its URL is this service's audience.
+# ---------------------------------------------------------------------------
+
+MCP_BASE_URL="$(gcloud run services describe "${MCP_SERVICE}" \
+  --project "${PROJECT}" --region "${REGION}" \
+  --format='value(status.url)' 2>/dev/null || true)"
+
+if [ -z "${MCP_BASE_URL}" ]; then
+  echo "cannot find Cloud Run service ${MCP_SERVICE} in ${REGION}." >&2
+  echo "run ./deploy.sh first -- this console is a front end for it." >&2
+  exit 1
+fi
+
+echo "mcp base url: ${MCP_BASE_URL}"
+
+# The audience is the service's BASE url, not the /mcp path: Cloud Run
+# validates the token's `aud` against the service root.
+MCP_AUDIENCE="${MCP_BASE_URL}"
+MCP_URL="${MCP_BASE_URL}/mcp"
+
+# ---------------------------------------------------------------------------
+# APIs
+# ---------------------------------------------------------------------------
+
+gcloud services enable \
+  run.googleapis.com \
+  cloudbuild.googleapis.com \
+  artifactregistry.googleapis.com \
+  secretmanager.googleapis.com \
+  --project "${PROJECT}" >/dev/null
+
+# ---------------------------------------------------------------------------
+# Runtime identity
+# ---------------------------------------------------------------------------
+
+if gcloud iam service-accounts describe "${SA}" --project "${PROJECT}" >/dev/null 2>&1; then
+  echo "service account ${SA} already exists"
+else
+  gcloud iam service-accounts create "${SA_NAME}" \
+    --project "${PROJECT}" \
+    --display-name "goodreads-chat Cloud Run runtime"
+fi
+
+# ---------------------------------------------------------------------------
+# Secrets
+# ---------------------------------------------------------------------------
+
+ensure_secret() {   # name, value
+  local name="$1" value="$2"
+  if gcloud secrets describe "${name}" --project "${PROJECT}" >/dev/null 2>&1; then
+    echo "secret ${name} already exists (leaving its value alone)"
+  else
+    if [ -z "${value}" ]; then
+      echo "secret ${name} does not exist and no value was supplied." >&2
+      return 1
+    fi
+    printf '%s' "${value}" | gcloud secrets create "${name}" \
+      --project "${PROJECT}" --replication-policy=automatic --data-file=- >/dev/null
+    echo "created secret ${name}"
+  fi
+  gcloud secrets add-iam-policy-binding "${name}" \
+    --project "${PROJECT}" \
+    --member="serviceAccount:${SA}" \
+    --role="roles/secretmanager.secretAccessor" \
+    --condition=None >/dev/null
+}
+
+if ! ensure_secret "${KEY_SECRET}" "${ANTHROPIC_API_KEY:-}"; then
+  echo >&2
+  echo "supply it once, either way:" >&2
+  echo "  ANTHROPIC_API_KEY=sk-ant-... ./deploy-chat.sh" >&2
+  echo "  printf %s \"\$KEY\" | gcloud secrets create ${KEY_SECRET} --data-file=-" >&2
+  exit 1
+fi
+
+# Generated rather than prompted: a console with no access token would be an
+# open endpoint billing the Anthropic account, so there is no path that skips it.
+GENERATED_ACCESS=""
+if ! gcloud secrets describe "${ACCESS_SECRET}" --project "${PROJECT}" >/dev/null 2>&1; then
+  GENERATED_ACCESS="${CHAT_ACCESS_TOKEN:-$(openssl rand -hex 24)}"
+fi
+ensure_secret "${ACCESS_SECRET}" "${GENERATED_ACCESS}"
+
+# ---------------------------------------------------------------------------
+# Build. The root Dockerfile builds the MCP server; this image has its own.
+# ---------------------------------------------------------------------------
+
+if ! gcloud artifacts repositories describe "${REPO}" \
+     --project "${PROJECT}" --location "${REGION}" >/dev/null 2>&1; then
+  gcloud artifacts repositories create "${REPO}" \
+    --project "${PROJECT}" --location "${REGION}" --repository-format=docker \
+    --description "goodreads service images"
+fi
+
+gcloud builds submit \
+  --project "${PROJECT}" \
+  --region "${REGION}" \
+  --config cloudbuild-chat.yaml \
+  --substitutions "_IMAGE=${IMAGE}" \
+  .
+
+# ---------------------------------------------------------------------------
+# Deploy
+# ---------------------------------------------------------------------------
+#
+# --allow-unauthenticated is load-bearing and is the reason this is a separate
+#   service: browsers carry no Google identity. Access control is the shared
+#   token in CHAT_ACCESS_TOKEN, checked in app.py.
+# --set-secrets, never --set-env-vars, for both secrets: the values never
+#   appear in the revision's env, in `gcloud run services describe`, or in the
+#   image.
+
+gcloud run deploy "${SERVICE}" \
+  --project "${PROJECT}" \
+  --region "${REGION}" \
+  --image "${IMAGE}" \
+  --service-account "${SA}" \
+  --allow-unauthenticated \
+  --ingress all \
+  --cpu-boost \
+  --cpu "${CPU}" \
+  --memory "${MEMORY}" \
+  --min-instances "${MIN_INSTANCES}" \
+  --max-instances "${MAX_INSTANCES}" \
+  --session-affinity \
+  --timeout 600 \
+  --port 8080 \
+  --set-env-vars "GOODREADS_MCP_URL=${MCP_URL},GOODREADS_MCP_AUDIENCE=${MCP_AUDIENCE},CHAT_MAX_TOOL_CALLS=${CHAT_MAX_TOOL_CALLS},CHAT_MAX_TURNS=${CHAT_MAX_TURNS},CHAT_RATE_LIMIT_TURNS=${CHAT_RATE_LIMIT_TURNS},CHAT_RATE_LIMIT_WINDOW=${CHAT_RATE_LIMIT_WINDOW}" \
+  --set-secrets "ANTHROPIC_API_KEY=${KEY_SECRET}:latest,CHAT_ACCESS_TOKEN=${ACCESS_SECRET}:latest"
+
+# ---------------------------------------------------------------------------
+# The one new binding on the private service.
+# ---------------------------------------------------------------------------
+
+gcloud run services add-iam-policy-binding "${MCP_SERVICE}" \
+  --project "${PROJECT}" \
+  --region "${REGION}" \
+  --member="serviceAccount:${SA}" \
+  --role="roles/run.invoker" >/dev/null
+
+echo
+echo "granted roles/run.invoker on ${MCP_SERVICE} to ${SA}"
+echo "  (no BigQuery role, no token-creator role, no project-level binding)"
+
+CHAT_URL="$(gcloud run services describe "${SERVICE}" \
+  --project "${PROJECT}" --region "${REGION}" --format='value(status.url)')"
+
+echo
+echo "deployed: ${CHAT_URL}"
+if [ -n "${GENERATED_ACCESS}" ]; then
+  echo
+  echo "the console needs its access key on first visit:"
+  echo "  ${CHAT_URL}/?k=${GENERATED_ACCESS}"
+  echo
+  echo "that key is now in Secret Manager as ${ACCESS_SECRET}. Read it again with:"
+  echo "  gcloud secrets versions access latest --secret=${ACCESS_SECRET} --project ${PROJECT}"
+else
+  echo
+  echo "open it with ?k=<key>, where the key is:"
+  echo "  gcloud secrets versions access latest --secret=${ACCESS_SECRET} --project ${PROJECT}"
+fi

@@ -4,3 +4,6 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 logs/
+
+# Local secrets: the Anthropic key and the console access token.
+.env
