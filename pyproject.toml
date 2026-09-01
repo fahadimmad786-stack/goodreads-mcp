@@ -2,7 +2,9 @@
 name = "goodreads-mcp"
 version = "0.1.0"
 description = "MCP server for statistical questions about the Goodreads BigQuery dataset"
+readme = "README.md"
 requires-python = ">=3.10"
+license = { text = "MIT" }
 dependencies = [
     "fastmcp>=2.0",
     "google-cloud-bigquery>=3.0",

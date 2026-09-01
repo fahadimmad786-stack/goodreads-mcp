@@ -791,3 +791,14 @@ qualifies, that no numeral in the model's prose escapes the checker, that no
 credential can reach a client, and that the no-model mode is the same path and
 not a parallel one: the same frame builder, forms with no hard-coded parameter
 in them, and values that reach the server exactly as typed.
+
+## Licence
+
+MIT — see [`LICENSE`](LICENSE).
+
+One bundled asset is licensed separately and is **not** covered by the MIT
+grant: `webchat/static/fonts/jetbrains-mono-*.woff2` is JetBrains Mono,
+© 2020 The JetBrains Mono Project Authors, under the SIL Open Font License 1.1.
+Its licence travels with it at `webchat/static/fonts/OFL.txt`. The OFL permits
+bundling and redistribution as done here; it does not permit selling the font
+files on their own.
