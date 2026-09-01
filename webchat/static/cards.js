@@ -31,6 +31,32 @@ const UNIT_TEXT = {
        + '(the edition carrying the most ratings)',
 };
 
+/* The aria-label for a chart. A chart is role="img", so it is one node to a
+ * screen reader and its label has to carry what the card shows visually: the
+ * measure, the number of marks, the unit one row counts, the n the figure
+ * rests on, and what the threshold removed. Anything less would tell a
+ * screen-reader user less than the card tells everyone else. */
+function figureDesc(env, lead) {
+  const bits = [lead.endsWith('.') ? lead : `${lead}.`];
+
+  const unit = (env.filters || {}).unit;
+  if (unit) bits.push(`Unit: ${unit} — ${UNIT_TEXT[unit] || 'as returned'}.`);
+
+  const counts = Object.entries(env.n || {}).map(([k, v]) => `${k} ${fmt(v)}`);
+  if (counts.length) bits.push(`Counts: ${counts.join(', ')}.`);
+
+  const excluded = env.excluded || {};
+  if (excluded.min_ratings !== undefined) {
+    let line = `Threshold min_ratings=${fmt(excluded.min_ratings)}`;
+    if (excluded.n_books_below_threshold !== undefined) {
+      line += ` excluded ${fmt(excluded.n_books_below_threshold)}`
+            + ` of ${fmt(excluded.n_books_in_scope)} books in scope`;
+    }
+    bits.push(`${line}.`);
+  }
+  return bits.join(' ');
+}
+
 export function renderToolCard(frame) {
   if (frame.kind === 'probe') return renderProbeCard(frame);
 
@@ -43,6 +69,12 @@ export function renderToolCard(frame) {
 
   const markers = new MarkerIndex(caveats);
   const figure = node('div', 'figure');
+  /* A wide table or chart scrolls inside the card rather than widening the
+   * page, which makes this a scrollable region -- so it has to be reachable
+   * and operable from the keyboard (WCAG 2.1.1). */
+  figure.tabIndex = 0;
+  figure.setAttribute('role', 'group');
+  figure.setAttribute('aria-label', `${frame.tool} figures`);
   (FIGURES[frame.tool] || genericFigure)(env, figure, markers, frame);
   card.appendChild(figure);
 
@@ -60,6 +92,8 @@ export function renderToolCard(frame) {
 export function renderPendingCard(frame) {
   const card = node('div', 'card');
   card.dataset.call = frame.id;
+  card.dataset.state = 'running';
+  card.setAttribute('aria-busy', 'true');
   const head = node('div', 'card-head');
   head.appendChild(originBadge(frame.origin));
   head.appendChild(node('span', 'tool-name', frame.tool));
@@ -114,8 +148,7 @@ function renderProbeCard(frame) {
   const body = node('div', 'refusal-body');
   body.appendChild(node('div', '', p.message || ''));
   if (p.rule) {
-    const rule = node('div', '');
-    rule.style.marginTop = '12px';
+    const rule = node('div', 'guard-rule');
     rule.appendChild(node('span', 'rule', `guard rule: ${p.rule}`));
     if (p.rule_summary) rule.appendChild(document.createTextNode(` — ${p.rule_summary}`));
     body.appendChild(rule);
@@ -345,11 +378,21 @@ function wireHighlighting(card) {
 function autoTable(rows, markers, opts = {}) {
   const table = document.createElement('table');
   const cols = (opts.cols || Object.keys(rows[0] || {})).filter((c) => !INTERNAL.has(c));
+
+  /* Named for a screen reader, which meets the table with no surrounding
+   * layout to explain it. Hidden visually because the figure label above
+   * already says the same thing on screen. */
+  const caption = node('caption', 'sr-only',
+    opts.caption || `${rows.length} ${rows.length === 1 ? 'row' : 'rows'}: `
+      + `${cols.join(', ')}`);
+  table.appendChild(caption);
+
   const thead = document.createElement('thead');
   const hr = document.createElement('tr');
   cols.forEach((c) => {
     const numeric = typeof rows[0][c] === 'number';
     const th = node('th', numeric ? 'num' : '');
+    th.setAttribute('scope', 'col');
     th.appendChild(document.createTextNode(c));
     markers.decorate(th, c);
     hr.appendChild(th);
@@ -381,18 +424,25 @@ function part(target, text, element) {
   if (element) target.appendChild(element);
 }
 
+/* The query succeeded and matched nothing. That is an answer, so it is stated
+ * in the figure area rather than left as an empty panel. */
+function empty(target, text) {
+  target.appendChild(node('div', 'empty', text));
+}
+
 /* --- per-tool figures ---------------------------------------------------- */
 
 function rankFigure(catKey) {
   return (env, out, markers, frame) => {
     const rows = env.data || [];
-    if (!rows.length) return part(out, 'no groups matched', null);
+    if (!rows.length) return empty(out, 'no groups matched this threshold — nothing to rank');
     const measure = (frame.params && frame.params.order_by) || pickMeasure(rows[0]);
-    part(out, `${measure} by ${catKey} — ${rows.length} groups, ordered as returned`,
-      hbars({
-        rows, cat: catKey, value: measure, unit: measure,
-        extra: ['n_books', 'n_ratings', 'avg_book_rating', 'pooled_rating', 'editions_per_title'],
-      }));
+    const lead = `${measure} by ${catKey} — ${rows.length} groups, ordered as returned`;
+    part(out, lead, hbars({
+      rows, cat: catKey, value: measure, unit: measure,
+      extra: ['n_books', 'n_ratings', 'avg_book_rating', 'pooled_rating', 'editions_per_title'],
+      desc: figureDesc(env, `Bar chart: ${lead}`),
+    }));
     part(out, null, autoTable(rows, markers));
   };
 }
@@ -406,14 +456,16 @@ function pickMeasure(row) {
 
 function yearFigure(env, out, markers) {
   const rows = env.data || [];
-  if (!rows.length) return part(out, 'no years matched', null);
+  if (!rows.length) return empty(out, 'no years matched these filters');
   /* Two measures, two charts. Never one chart with two y-axes. */
   part(out, 'n_books per publish_year',
     lineSeries({ rows, x: 'publish_year', y: 'n_books', unit: 'n_books',
-      extra: ['n_ratings', 'avg_book_rating', 'pooled_rating'] }));
+      extra: ['n_ratings', 'avg_book_rating', 'pooled_rating'],
+      desc: figureDesc(env, `Line chart: n_books per publish_year, ${rows.length} years`) }));
   part(out, 'avg_book_rating per publish_year',
     lineSeries({ rows, x: 'publish_year', y: 'avg_book_rating', unit: 'avg_book_rating',
-      extra: ['pooled_rating', 'n_books'] }));
+      extra: ['pooled_rating', 'n_books'],
+      desc: figureDesc(env, `Line chart: avg_book_rating per publish_year, ${rows.length} years`) }));
   part(out, null, autoTable(rows, markers));
 }
 
@@ -423,12 +475,14 @@ function distFigure(env, out, markers) {
   if (hist.length) {
     part(out, 'n_books per rating bucket',
       vbars({ rows: hist, cat: 'bucket', value: 'n_books', unit: 'n_books',
-        extra: ['n_ratings', 'pct_of_books'], rotate: true }));
+        extra: ['n_ratings', 'pct_of_books'], rotate: true,
+        desc: figureDesc(env, `Bar chart: n_books per rating bucket, ${hist.length} buckets`) }));
   }
   if (d.star_share_pct) {
     const rows = Object.entries(d.star_share_pct).map(([k, v]) => ({ star: k, pct_of_ratings: v }));
     part(out, 'pct_of_ratings per star (pooled across every rating in scope)',
-      vbars({ rows, cat: 'star', value: 'pct_of_ratings', unit: 'pct_of_ratings' }));
+      vbars({ rows, cat: 'star', value: 'pct_of_ratings', unit: 'pct_of_ratings',
+        desc: figureDesc(env, 'Bar chart: pct_of_ratings per star, pooled across every rating in scope') }));
   }
   if (d.summary) part(out, 'summary', autoTable([d.summary], markers));
   if (hist.length) part(out, null, autoTable(hist, markers));
@@ -436,10 +490,12 @@ function distFigure(env, out, markers) {
 
 function monthFigure(env, out, markers) {
   const rows = (env.data || []).map((r) => ({ ...r, __flagged: !!r.placeholder_inflated }));
-  if (!rows.length) return part(out, 'no months returned', null);
+  if (!rows.length) return empty(out, 'no months returned for this range');
   part(out, 'n_books_published per publish_month — january carries the placeholder dates',
     vbars({ rows, cat: 'month', value: 'n_books_published', unit: 'n_books_published',
-      extra: ['pct_of_books', 'avg_book_rating', 'pooled_rating'] }));
+      extra: ['pct_of_books', 'avg_book_rating', 'pooled_rating'],
+      desc: figureDesc(env, 'Bar chart: n_books_published per publish_month, 12 months. '
+        + 'January is inflated by placeholder dates and is flagged in the table') }));
   part(out, null, autoTable(rows, markers));
 }
 
@@ -449,7 +505,8 @@ function pageFigure(env, out, markers) {
   if (bands.length) {
     part(out, 'avg_book_rating per pages_band',
       vbars({ rows: bands, cat: 'pages_band', value: 'avg_book_rating', unit: 'avg_book_rating',
-        extra: ['n_books', 'n_ratings', 'pooled_rating', 'avg_pages'], rotate: true }));
+        extra: ['n_books', 'n_ratings', 'pooled_rating', 'avg_pages'], rotate: true,
+        desc: figureDesc(env, `Bar chart: avg_book_rating per pages_band, ${bands.length} bands`) }));
     part(out, null, autoTable(bands, markers));
   }
   if (d.page_count_quartiles) {
@@ -462,7 +519,8 @@ function userFigure(env, out, markers) {
   if (d.star_distribution) {
     part(out, 'n_ratings per star, from the 4,154-user panel',
       vbars({ rows: d.star_distribution, cat: 'rating', value: 'n_ratings', unit: 'n_ratings',
-        extra: ['rating_label', 'pct_of_ratings'] }));
+        extra: ['rating_label', 'pct_of_ratings'],
+        desc: figureDesc(env, 'Bar chart: n_ratings per star, from the 4,154-user panel') }));
     part(out, null, autoTable(d.star_distribution, markers));
   }
   if (d.summary) part(out, 'summary', autoTable([d.summary], markers));
@@ -470,10 +528,12 @@ function userFigure(env, out, markers) {
 
 function compareFigure(env, out, markers) {
   const rows = env.data || [];
-  if (!rows.length) return part(out, 'no titles matched both tables', null);
+  if (!rows.length) return empty(out, 'no titles matched in both tables — the join covers about half of them');
   part(out, 'divergence per title — panel average minus goodreads pooled rating',
     hbars({ rows, cat: 'example_raw_title', value: 'divergence', unit: 'divergence',
-      extra: ['user_avg_rating', 'book_pooled_rating', 'user_n_ratings', 'book_n_ratings', 'n_editions'] }));
+      extra: ['user_avg_rating', 'book_pooled_rating', 'user_n_ratings', 'book_n_ratings', 'n_editions'],
+      desc: figureDesc(env, `Bar chart: divergence per title, ${rows.length} titles — `
+        + 'the user panel average minus the goodreads pooled rating') }));
   part(out, null, autoTable(rows, markers));
 }
 
@@ -493,9 +553,9 @@ function overviewFigure(env, out, markers) {
 function genericFigure(env, out, markers) {
   const d = env.data;
   if (Array.isArray(d) && d.length) return part(out, `${d.length} rows`, autoTable(d, markers));
-  if (Array.isArray(d)) return part(out, 'no rows returned', null);
+  if (Array.isArray(d)) return empty(out, 'the query succeeded and matched no rows');
   if (d && typeof d === 'object') return overviewFigure(env, out, markers);
-  part(out, 'no data', null);
+  empty(out, 'this tool returned no data');
 }
 
 const FIGURES = {
@@ -511,18 +571,21 @@ const FIGURES = {
   dataset_overview: overviewFigure,
   top_books_by_rating: (env, out, markers) => {
     const rows = env.data || [];
-    if (!rows.length) return part(out, 'no books above the threshold', null);
+    if (!rows.length) return empty(out, 'no books cleared the min_ratings threshold');
     part(out, `rating per book — ${rows.length} rows, ordered as returned`,
       hbars({ rows, cat: 'name', value: 'rating', unit: 'rating',
-        extra: ['authors', 'n_ratings', 'publish_year', 'n_editions'] }));
+        extra: ['authors', 'n_ratings', 'publish_year', 'n_editions'],
+        desc: figureDesc(env, `Bar chart: rating per book, ${rows.length} books, ordered as returned`) }));
     part(out, null, autoTable(rows, markers));
   },
   top_titles_by_user_ratings: (env, out, markers) => {
     const rows = env.data || [];
-    if (!rows.length) return part(out, 'no titles above the threshold', null);
-    part(out, `avg_user_rating per title — the 4,154-user panel only`,
+    if (!rows.length) return empty(out, 'no titles cleared the threshold in the user panel');
+    part(out, 'avg_user_rating per title — the 4,154-user panel only',
       hbars({ rows, cat: 'example_raw_title', value: 'avg_user_rating', unit: 'avg_user_rating',
-        extra: ['n_user_ratings', 'n_users'] }));
+        extra: ['n_user_ratings', 'n_users'],
+        desc: figureDesc(env, `Bar chart: avg_user_rating per title, ${rows.length} titles, `
+          + 'from the 4,154-user panel only') }));
     part(out, null, autoTable(rows, markers));
   },
 };

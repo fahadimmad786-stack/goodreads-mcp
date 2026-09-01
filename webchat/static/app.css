@@ -1,25 +1,59 @@
 /* ==========================================================================
    goodreads-stats console
-   The numbers are the interface. One accent (validated blue, slot 1 of the
-   reference categorical palette) plus one reserved status ink for refusals.
-   No shadows, no fills except data marks, hairline rules throughout.
+
+   A data instrument, not a page. The numbers are the interface, so the design
+   spends itself on making them legible and their grounding visible: one
+   accent, one reserved status ink, hairline rules, no gradients, no shadows,
+   no fill that is not a data mark.
+
+   Three rules hold the whole sheet together:
+
+     1. Every size comes from the type scale or the space scale below. There
+        are no one-off pixel values in the rules that follow -- a figure and
+        the label under it are related by a step in a scale, not by taste.
+     2. Every card section shares one horizontal padding, so the tool name,
+        the parameters, the figure, the n block and the cost all start on the
+        same vertical line. That alignment is what makes a card scannable.
+     3. Colour carries meaning exactly twice: the accent for data marks and
+        interaction, the flag ink for refusals and placeholder-inflated rows.
+        Text always wears a text token, never a series colour.
+
+   Contrast is measured, not judged. Every ink/surface pair here meets 4.5:1
+   for text and 3:1 for control boundaries, in both themes; the accent passes
+   the categorical-palette checks against both surfaces.
    ========================================================================== */
+
+/* --- tokens ---------------------------------------------------------------
+   Light is the base. The dark block redefines only what changes, so no colour
+   is ever defined solely inside a media query. */
 
 :root {
   color-scheme: light;
 
+  /* Ink: primary, secondary, tertiary. */
   --ink:        #17171a;
   --ink-2:      #55555c;
-  --ink-3:      #83838c;
+  /* Tertiary ink carries a great deal of 11–12px monospace metadata, so it is
+     held to the 4.5:1 body-text ratio rather than a looser "muted" ratio. */
+  --ink-3:      #6b6b74;
+
   --ground:     #faf9f7;
   --surface:    #fcfcfb;
   --surface-2:  #f4f2ee;
+
+  /* Hairlines. Decorative separators only -- never a control boundary. */
   --rule:       #e4e1db;
   --rule-2:     #cfccc4;
+  /* Control boundaries: inputs, selects, buttons, chart axes. Held to 3:1 so
+     the edge of an interactive thing is identifiable (WCAG 1.4.11). */
+  --edge:       #8b8780;
 
-  --accent:     #2a78d6;
-  --accent-ink: #1f5da8;
+  --accent:      #2a78d6;   /* data marks; validated against both surfaces */
+  --accent-ink:  #1f5da8;   /* the accent as text */
+  --accent-fill: #2569bd;   /* the accent as a filled control, under white */
+  --on-accent:   #ffffff;
   --accent-soft: rgba(42, 120, 214, 0.10);
+  --focus:       #2a78d6;
 
   /* Reserved status ink: refusals and flagged rows only. Never a data series. */
   --flag:       #8c5f14;
@@ -28,30 +62,68 @@
   --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
 
-  --s1: 4px;  --s2: 8px;  --s3: 12px; --s4: 16px;
-  --s5: 24px; --s6: 32px; --s7: 48px;
+  /* Type scale. Six steps, and every rule below uses one of them. */
+  --t-micro: 10.5px;   /* pills and uppercase badges */
+  --t-meta:  11.5px;   /* monospace metadata, chart ticks */
+  --t-sm:    12.5px;   /* dense secondary text */
+  --t-base:  13px;     /* tables and form controls */
+  --t-body:  15px;     /* prose */
+  --t-lead:  19px;     /* the one heading per pane */
 
-  --measure: 68ch;
+  --lh-flat:  1;
+  --lh-tight: 1.35;
+  --lh-base:  1.5;
+  --lh-prose: 1.62;
+
+  /* Space scale, 4px based. */
+  --s0: 2px;  --s1: 4px;  --s2: 8px;  --s3: 12px;
+  --s4: 16px; --s5: 24px; --s6: 32px; --s7: 48px;
+
+  /* One horizontal padding for every section of a card, so their left edges
+     align down the whole card. */
+  --card-pad: var(--s4);
+  --radius:   3px;
+  --radius-pill: 2px;
+  /* Optical padding, deliberately off the 4px grid: a 10.5px pill and a
+     12.5px inline code span both look wrong on layout spacing. Named here so
+     the two of them are stated once rather than guessed at each use. */
+  --pill-pad: 3px 5px;
+  --code-pad: 1px 5px;
+
+  --measure: 68ch;    /* the prose column */
+  --column:  62rem;   /* the thread's own width */
+  --control: 2.4rem;  /* one height for every button, input and select */
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
+
     --ink:        #f2f1ec;
     --ink-2:      #c3c2b7;
     --ink-3:      #8f8e85;
+
     --ground:     #141413;
     --surface:    #1a1a19;
     --surface-2:  #222220;
+
     --rule:       #2e2e2b;
     --rule-2:     #43423d;
-    --accent:     #3987e5;
-    --accent-ink: #7fb2f0;
+    --edge:       #726f68;
+
+    --accent:      #3987e5;
+    --accent-ink:  #7fb2f0;
+    --accent-fill: #3987e5;
+    --on-accent:   #141413;
     --accent-soft: rgba(57, 135, 229, 0.14);
+    --focus:       #7fb2f0;
+
     --flag:       #d3a24a;
     --flag-soft:  rgba(211, 162, 74, 0.12);
   }
 }
+
+/* --- base ---------------------------------------------------------------- */
 
 * { box-sizing: border-box; }
 
@@ -61,42 +133,109 @@ body {
   margin: 0;
   background: var(--ground);
   color: var(--ink);
-  font: 15px/1.62 var(--sans);
+  font: var(--t-body)/var(--lh-prose) var(--sans);
   -webkit-font-smoothing: antialiased;
   display: flex;
   flex-direction: column;
 }
 
+::selection { background: var(--accent-soft); }
+
+/* One focus treatment everywhere. Never removed, never signalled by colour
+   alone, and offset outwards so it is not mistaken for a border. */
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 1px;
+}
+/* Inside a clipping container the ring is drawn inwards instead, so the
+   card's rounded corners cannot crop it. */
+.card :focus-visible,
+.figure:focus-visible { outline-offset: -2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Visually hidden, still announced: the skip link, table captions, and the
+   live region that narrates a running call. */
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.skip-link {
+  position: absolute;
+  left: var(--s3);
+  top: var(--s3);
+  z-index: 60;
+  transform: translateY(-250%);
+  background: var(--surface);
+  color: var(--accent-ink);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
+  padding: var(--s2) var(--s3);
+  font: var(--t-base)/var(--lh-flat) var(--mono);
+  text-decoration: none;
+}
+.skip-link:focus { transform: none; }
+
+/* Shared pill: origin badge, verdict, caveat source, required marker. One
+   shape and one size for every small uppercase label in the interface. */
+.origin, .verdict, .caveat .src, .field .req {
+  font: var(--t-micro)/var(--lh-flat) var(--mono);
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  padding: var(--pill-pad);
+  border: 1px solid currentColor;
+  border-radius: var(--radius-pill);
+  white-space: nowrap;
+  flex: none;
+}
+
 /* --- masthead ------------------------------------------------------------
-   Deliberately carries no dataset figures. Every number about the data
-   arrives inside a tool card, from that tool's own JSON. */
+   Carries no dataset figures at all. Every number about the data arrives
+   inside a tool card, from that tool's own JSON. */
 
 .masthead {
   border-bottom: 1px solid var(--rule);
   background: var(--surface);
   padding: var(--s3) var(--s5);
   display: flex;
-  align-items: baseline;
-  gap: var(--s4);
+  align-items: center;
+  gap: var(--s3) var(--s4);
   flex-wrap: wrap;
 }
 
 .masthead h1 {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--t-body);
   font-weight: 600;
   letter-spacing: -0.005em;
+  line-height: var(--lh-tight);
 }
 
 .masthead p {
-  margin: 2px 0 0;
+  margin: var(--s0) 0 0;
   color: var(--ink-3);
-  font-size: 12.5px;
+  font-size: var(--t-sm);
+  line-height: var(--lh-tight);
+  max-width: 54ch;
 }
 
 .masthead-status {
   margin-left: auto;
-  font: 11.5px/1.4 var(--mono);
+  font: var(--t-meta)/var(--lh-tight) var(--mono);
   color: var(--ink-3);
   display: flex;
   align-items: center;
@@ -104,48 +243,61 @@ body {
   text-align: right;
 }
 
+/* The dot repeats what the line beside it already says; state is never
+   colour alone. */
 .dot {
-  width: 7px; height: 7px; border-radius: 50%;
-  background: var(--ink-3); flex: none;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--ink-3);
+  flex: none;
 }
-.dot.ok   { background: var(--accent); }
-.dot.bad  { background: var(--flag); }
+.dot.ok  { background: var(--accent); }
+.dot.bad { background: var(--flag); }
 
 /* --- mode toggle ---------------------------------------------------------
-   Two paths to the same tools. The toggle is chrome, not a data control, so it
-   carries the same hairline treatment as everything else. */
+   Two paths to the same tools. A tablist: arrow keys move between the tabs,
+   and the selected one is filled rather than merely tinted. */
 
 .modes {
   display: flex;
-  border: 1px solid var(--rule-2);
-  border-radius: 3px;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
   overflow: hidden;
-  align-self: center;
 }
+
 .modes button {
-  font: 11.5px/1 var(--mono);
+  font: var(--t-meta)/var(--lh-flat) var(--mono);
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--ink-3);
+  color: var(--ink-2);
   background: none;
   border: 0;
-  border-left: 1px solid var(--rule-2);
+  border-left: 1px solid var(--edge);
   padding: var(--s2) var(--s3);
+  min-height: var(--control);
   cursor: pointer;
+  transition: background-color 100ms, color 100ms;
 }
 .modes button:first-child { border-left: 0; }
-.modes button[aria-selected="true"] { color: var(--surface); background: var(--accent); }
-.modes button:disabled { cursor: not-allowed; color: var(--ink-3); opacity: 0.65; }
+.modes button:hover:not(:disabled):not([aria-selected="true"]) {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.modes button[aria-selected="true"] {
+  color: var(--on-accent);
+  background: var(--accent-fill);
+}
+.modes button:disabled { cursor: not-allowed; color: var(--ink-3); }
 .modes button .off {
   margin-left: var(--s2);
   color: var(--flag);
   letter-spacing: 0;
   text-transform: none;
 }
-.modes button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.modes button:focus-visible { outline-offset: -3px; }
 
-/* One pane and one composer at a time. Both are hidden until /api/health has
-   said which modes exist, so a keyless deployment never flashes a chat box. */
+/* One pane and one composer at a time, both hidden until /api/health has
+   said which modes exist -- a keyless deployment never flashes a chat box. */
 .pane, #composer-chat, #composer-tools { display: none; }
 body[data-mode="chat"]  #pane-chat,
 body[data-mode="chat"]  #composer-chat,
@@ -158,12 +310,17 @@ body[data-mode="tools"] #composer-tools { display: block; }
   flex: 1;
   overflow-y: auto;
   padding: var(--s6) var(--s5) var(--s7);
+  scroll-behavior: smooth;
 }
 
-.turn { max-width: 62rem; margin: 0 auto var(--s6); }
+.turn {
+  max-width: var(--column);
+  margin: 0 auto var(--s6);
+}
+.turn:last-child { margin-bottom: 0; }
 
 .role {
-  font: 11.5px/1 var(--mono);
+  font: var(--t-meta)/var(--lh-flat) var(--mono);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--ink-3);
@@ -184,7 +341,8 @@ body[data-mode="tools"] #composer-tools { display: block; }
 }
 .prose:not(:empty) { margin: var(--s4) 0; }
 
-/* A numeral the model wrote that no tool result accounts for. */
+/* A numeral the model wrote that no tool result accounts for. Underlined as
+   well as inked, so it is not marked by colour alone. */
 .unsourced {
   border-bottom: 1px dashed var(--flag);
   color: var(--flag);
@@ -194,83 +352,112 @@ body[data-mode="tools"] #composer-tools { display: block; }
 .reasoning {
   max-width: var(--measure);
   margin: var(--s3) 0;
-  font-size: 13px;
+  font-size: var(--t-base);
   color: var(--ink-3);
   border-left: 1px solid var(--rule-2);
   padding-left: var(--s3);
 }
 .reasoning summary {
   cursor: pointer;
-  font: 11.5px/1.4 var(--mono);
+  font: var(--t-meta)/var(--lh-tight) var(--mono);
   letter-spacing: 0.05em;
   text-transform: uppercase;
   color: var(--ink-3);
+  padding: var(--s1) 0;
 }
+.reasoning summary:hover { color: var(--ink-2); }
 .reasoning .body { white-space: pre-wrap; margin-top: var(--s2); }
 
-/* --- tool card ----------------------------------------------------------- */
+/* --- tool card -----------------------------------------------------------
+   Six sections, one padding, hairline rules between them: head, parameters,
+   figure, grounds, caveats, cost -- always in that order, so the shape is
+   learned once and then read at a glance. */
 
 .card {
   margin: var(--s4) 0;
-  border: 1px solid var(--rule);
-  border-radius: 3px;
+  border: 1px solid var(--rule-2);
+  border-radius: var(--radius);
   background: var(--surface);
   overflow: hidden;
 }
-
 .card > * + * { border-top: 1px solid var(--rule); }
 
 .card-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: var(--s2);
-  padding: var(--s3) var(--s4);
-  font: 12.5px/1.4 var(--mono);
+  padding: var(--s3) var(--card-pad);
+  font: var(--t-sm)/var(--lh-tight) var(--mono);
   flex-wrap: wrap;
 }
 
-.origin {
-  font-size: 10.5px;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  padding: 2px 5px;
-  border: 1px solid var(--rule-2);
-  border-radius: 2px;
-  color: var(--ink-3);
-  flex: none;
-}
-.origin.mcp { color: var(--accent-ink); border-color: var(--accent); }
-.origin.bff { color: var(--flag); border-color: var(--flag); }
+.origin { color: var(--ink-3); }
+.origin.mcp { color: var(--accent-ink); }
+.origin.bff { color: var(--flag); }
 
-.tool-name { font-weight: 600; color: var(--ink); }
-.demo-note { color: var(--flag); font-size: 11.5px; }
-.timing { margin-left: auto; color: var(--ink-3); font-size: 11.5px; }
+.tool-name {
+  font-weight: 600;
+  color: var(--ink);
+  font-size: var(--t-base);
+}
+.demo-note { color: var(--flag); font-size: var(--t-meta); }
+.timing {
+  margin-left: auto;
+  color: var(--ink-3);
+  font-size: var(--t-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Running: the timing slot breathes until the result replaces the card. */
+.card[data-state="running"] .timing { animation: pulse 1.4s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: 0.4; } }
 
 .params {
-  padding: var(--s2) var(--s4);
-  font: 12px/1.7 var(--mono);
+  padding: var(--s2) var(--card-pad);
+  font: var(--t-sm)/var(--lh-base) var(--mono);
   color: var(--ink-2);
   background: var(--surface-2);
+  word-break: break-word;
 }
 .params .k { color: var(--ink-3); }
 .params .none { color: var(--ink-3); font-style: italic; }
 
-.figure { padding: var(--s4); overflow-x: auto; }
+/* The figure scrolls on its own rather than widening the page, which makes
+   it a scrollable region and therefore keyboard-reachable. */
+.figure {
+  padding: var(--card-pad);
+  overflow-x: auto;
+}
 
 .figure-label {
-  font: 11.5px/1.4 var(--mono);
+  font: var(--t-meta)/var(--lh-tight) var(--mono);
   letter-spacing: 0.04em;
   color: var(--ink-3);
   margin-bottom: var(--s3);
 }
+.figure > * + .figure-label { margin-top: var(--s5); }
+
+/* Nothing came back: a stated absence, not a blank panel. */
+.empty {
+  font: var(--t-base)/var(--lh-base) var(--mono);
+  color: var(--ink-3);
+  border: 1px dashed var(--rule-2);
+  border-radius: var(--radius);
+  padding: var(--s4);
+  text-align: center;
+}
 
 /* --- tables -------------------------------------------------------------- */
 
-table { border-collapse: collapse; width: 100%; font-size: 13px; }
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: var(--t-base);
+}
 
 thead th {
   text-align: left;
-  font: 11.5px/1.3 var(--mono);
+  font: var(--t-meta)/var(--lh-tight) var(--mono);
   letter-spacing: 0.03em;
   color: var(--ink-3);
   font-weight: 500;
@@ -285,44 +472,74 @@ tbody td {
   vertical-align: baseline;
 }
 tbody tr:last-child td { border-bottom: 0; }
-td.num, th.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+tbody tr:hover td { background: var(--accent-soft); }
+
+td.num, th.num {
+  text-align: right;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
 td.name { max-width: 26rem; }
+
+/* Placeholder-inflated rows: tinted and labelled, never tint alone. */
 tr.flagged td { background: var(--flag-soft); }
 tr.flagged td:first-child::after {
   content: " placeholder-inflated";
   color: var(--flag);
-  font: 10.5px var(--mono);
+  font: var(--t-micro) var(--mono);
 }
 
-th.marked, td.marked { position: relative; }
 th .mk {
-  color: var(--accent);
-  font-size: 10px;
+  color: var(--accent-ink);
+  font-size: var(--t-micro);
   vertical-align: super;
   cursor: help;
   margin-left: 1px;
 }
 th.hl, td.hl { background: var(--accent-soft); }
 
-/* --- the n / unit / threshold block ------------------------------------- */
+/* --- the n / unit / threshold block --------------------------------------
+   The grounding of every figure above it: the count it rests on, what one
+   row counts, and what the threshold removed. */
 
-.grounds { padding: var(--s3) var(--s4); font-size: 13px; }
-.grounds dl { margin: 0; display: grid; grid-template-columns: 7.5rem 1fr; gap: var(--s2) var(--s3); }
+.grounds {
+  padding: var(--s3) var(--card-pad);
+  font-size: var(--t-base);
+}
+.grounds dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: 7.5rem 1fr;
+  gap: var(--s2) var(--s3);
+  align-items: baseline;
+}
 .grounds dt {
-  font: 11.5px/1.55 var(--mono);
+  font: var(--t-meta)/var(--lh-base) var(--mono);
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--ink-3);
 }
-.grounds dd { margin: 0; color: var(--ink-2); }
-.grounds dd b { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--ink); font-weight: 600; }
+.grounds dd {
+  margin: 0;
+  color: var(--ink-2);
+  line-height: var(--lh-base);
+}
+.grounds dd b {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  font-weight: 600;
+}
+.grounds .k { color: var(--ink-3); font-family: var(--mono); }
 
-/* --- caveats: attached, always open ------------------------------------- */
+/* --- caveats: attached, always open -------------------------------------
+   A caveat sits in the same card as the figure it weakens, marked against
+   the specific column, and never behind a disclosure triangle. */
 
-.caveats { padding: var(--s3) var(--s4); }
+.caveats { padding: var(--s3) var(--card-pad); }
 .caveats h4 {
   margin: 0 0 var(--s3);
-  font: 11.5px/1.3 var(--mono);
+  font: var(--t-meta)/var(--lh-tight) var(--mono);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--ink-3);
@@ -334,37 +551,35 @@ th.hl, td.hl { background: var(--accent-soft); }
   gap: 0 var(--s2);
   padding: var(--s2) 0;
   border-top: 1px solid var(--rule);
-  font-size: 13px;
-  line-height: 1.55;
+  font-size: var(--t-base);
+  line-height: var(--lh-base);
 }
 .caveat:first-of-type { border-top: 0; }
-.caveat .mk { color: var(--accent); font-family: var(--mono); font-size: 11.5px; }
-.caveat .src {
-  font: 10.5px var(--mono);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--ink-3);
-  border: 1px solid var(--rule-2);
-  border-radius: 2px;
-  padding: 1px 4px;
-  margin-right: var(--s2);
-  white-space: nowrap;
+.caveat .mk {
+  color: var(--accent-ink);
+  font-family: var(--mono);
+  font-size: var(--t-meta);
 }
-.caveat .applies {
-  display: block;
-  margin-top: 3px;
-  font: 11.5px var(--mono);
+.caveat .src {
   color: var(--ink-3);
+  border-color: var(--rule-2);
+  margin-right: var(--s2);
+  display: inline-block;
 }
 .caveat .text { color: var(--ink-2); }
-.caveat.hl { background: var(--accent-soft); }
-.caveat:hover { background: var(--accent-soft); }
+.caveat .applies {
+  display: block;
+  margin-top: var(--s1);
+  font: var(--t-meta)/var(--lh-tight) var(--mono);
+  color: var(--ink-3);
+}
+.caveat.hl, .caveat:hover { background: var(--accent-soft); }
 
-/* --- query meta ---------------------------------------------------------- */
+/* --- query cost ---------------------------------------------------------- */
 
 .qmeta {
-  padding: var(--s2) var(--s4);
-  font: 11.5px/1.6 var(--mono);
+  padding: var(--s2) var(--card-pad);
+  font: var(--t-meta)/var(--lh-base) var(--mono);
   color: var(--ink-3);
   background: var(--surface-2);
   display: flex;
@@ -373,64 +588,75 @@ th.hl, td.hl { background: var(--accent-soft); }
 }
 .qmeta .hit { color: var(--accent-ink); }
 
-/* --- refusal card ------------------------------------------------------- */
+/* --- refusal card --------------------------------------------------------
+   A refusal is a result, so it gets the same anatomy as a successful card --
+   head, parameters, body, caveats, cost -- in the reserved status ink. */
 
 .card.refusal { border-color: var(--flag); }
-.card.refusal .card-head { color: var(--flag); }
-.verdict {
-  font-size: 10.5px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  border: 1px solid var(--flag);
-  border-radius: 2px;
-  padding: 2px 5px;
-  color: var(--flag);
-}
+.card.refusal .tool-name { color: var(--flag); }
+.verdict { color: var(--flag); }
+
 .refusal-body {
-  padding: var(--s4);
+  padding: var(--card-pad);
   max-width: var(--measure);
-  font-size: 14px;
+  font-size: var(--t-base);
+  line-height: var(--lh-base);
   color: var(--ink);
+  white-space: pre-wrap;
 }
+.refusal-body .guard-rule { margin-top: var(--s3); }
+.refusal-body .rule { font-family: var(--mono); color: var(--flag); }
 .refusal-body .sql {
   display: block;
   margin-top: var(--s3);
-  font: 12px/1.6 var(--mono);
+  font: var(--t-sm)/var(--lh-base) var(--mono);
   color: var(--ink-2);
   background: var(--surface-2);
   border: 1px solid var(--rule);
-  border-radius: 2px;
+  border-radius: var(--radius);
   padding: var(--s2) var(--s3);
   white-space: pre-wrap;
   word-break: break-all;
 }
-.refusal-body .rule { font-family: var(--mono); color: var(--flag); }
 
-/* --- charts -------------------------------------------------------------- */
+/* --- charts --------------------------------------------------------------
+   One series per chart, so one accent and no legend; the figure label names
+   the measure. Every mark carries its own exact value, so nothing has to be
+   read off an axis. */
 
-.chart { display: block; width: 100%; height: auto; overflow: visible; }
+.chart {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
 .chart .bar { fill: var(--accent); }
 .chart .bar:hover { fill: var(--accent-ink); }
 .chart .bar.flagged { fill: var(--flag); }
-.chart .axis { stroke: var(--rule-2); stroke-width: 1; }
-.chart .grid { stroke: var(--rule); stroke-width: 1; }
-.chart .series { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; }
+.chart .series {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
 .chart .marker { fill: var(--accent); stroke: var(--surface); stroke-width: 2; }
-.chart text { font: 11px var(--mono); fill: var(--ink-3); }
-.chart text.value { fill: var(--ink); font-size: 11px; }
-.chart text.cat { fill: var(--ink-2); }
+.chart .axis { stroke: var(--edge); stroke-width: 1; }
+.chart .grid { stroke: var(--rule); stroke-width: 1; }
 .chart .crosshair { stroke: var(--rule-2); stroke-width: 1; stroke-dasharray: 2 2; }
 .chart .hit { fill: transparent; }
+.chart text { font: var(--t-meta) var(--mono); fill: var(--ink-3); }
+.chart text.value { fill: var(--ink); font-variant-numeric: tabular-nums; }
+.chart text.cat { fill: var(--ink-2); }
 
 .tip {
   position: fixed;
   z-index: 40;
   pointer-events: none;
   background: var(--surface);
-  border: 1px solid var(--rule-2);
-  border-radius: 3px;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
   padding: var(--s2) var(--s3);
-  font: 12px/1.5 var(--mono);
+  font: var(--t-sm)/var(--lh-base) var(--mono);
   color: var(--ink);
   max-width: 22rem;
   opacity: 0;
@@ -439,17 +665,58 @@ th.hl, td.hl { background: var(--accent-soft); }
 .tip.on { opacity: 1; }
 .tip .t { color: var(--ink-3); }
 
-/* --- contract line ------------------------------------------------------ */
+/* --- the contract line and the turn footer ------------------------------ */
 
 .contract {
   max-width: var(--measure);
   margin-top: var(--s3);
-  font: 11.5px/1.5 var(--mono);
+  font: var(--t-meta)/var(--lh-base) var(--mono);
   color: var(--ink-3);
   border-top: 1px solid var(--rule);
   padding-top: var(--s2);
 }
 .contract.violated { color: var(--flag); }
+
+/* --- notices -------------------------------------------------------------
+   Console-level problems: a rate limit, an expired session, an unreachable
+   backend. Distinct from a refusal, which is the server answering. */
+
+.notice {
+  max-width: var(--column);
+  margin: 0 auto var(--s4);
+  font: var(--t-sm)/var(--lh-base) var(--mono);
+  color: var(--flag);
+  border: 1px solid var(--flag);
+  border-radius: var(--radius);
+  padding: var(--s2) var(--s3);
+  background: var(--flag-soft);
+}
+
+/* --- intro: the empty state of each pane -------------------------------- */
+
+.intro {
+  max-width: var(--measure);
+  margin: 0 auto var(--s6);
+  color: var(--ink-2);
+}
+.intro h2 {
+  font-size: var(--t-lead);
+  font-weight: 600;
+  color: var(--ink);
+  margin: 0 0 var(--s3);
+  letter-spacing: -0.01em;
+  line-height: var(--lh-tight);
+}
+.intro p { margin: 0; }
+.intro ul { padding-left: 1.1rem; margin: var(--s3) 0 0; }
+.intro li { margin-bottom: var(--s2); }
+.intro li:last-child { margin-bottom: 0; }
+.intro code {
+  font: var(--t-sm) var(--mono);
+  background: var(--surface-2);
+  padding: var(--code-pad);
+  border-radius: var(--radius-pill);
+}
 
 /* --- composer ------------------------------------------------------------ */
 
@@ -458,70 +725,123 @@ th.hl, td.hl { background: var(--accent-soft); }
   background: var(--surface);
   padding: var(--s3) var(--s5) var(--s4);
 }
-.composer-inner { max-width: 62rem; margin: 0 auto; }
+.composer-inner { max-width: var(--column); margin: 0 auto; }
 
+/* Starting points. Two of them exist to be refused, and say so. */
 .examples {
   display: flex;
   gap: var(--s2) var(--s3);
   flex-wrap: wrap;
   margin-bottom: var(--s3);
-  font-size: 13px;
+  font-size: var(--t-base);
   align-items: baseline;
 }
 .examples .lead {
-  font: 11.5px var(--mono);
+  font: var(--t-meta) var(--mono);
   letter-spacing: 0.05em;
   text-transform: uppercase;
   color: var(--ink-3);
 }
 .examples button {
   font: inherit;
-  font-size: 13px;
+  font-size: var(--t-base);
   color: var(--accent-ink);
   background: none;
   border: 0;
   border-bottom: 1px solid var(--rule-2);
-  padding: 0 0 1px;
+  padding: var(--s0) 0;
   cursor: pointer;
   text-align: left;
 }
-.examples button:hover { border-bottom-color: var(--accent); }
-.examples button .warn { color: var(--flag); font-family: var(--mono); font-size: 11px; }
+.examples button:hover:not(:disabled) { border-bottom-color: var(--accent); }
+.examples button:disabled { color: var(--ink-3); cursor: default; }
+.examples button .warn {
+  color: var(--flag);
+  font-family: var(--mono);
+  font-size: var(--t-meta);
+}
 
 .row { display: flex; gap: var(--s2); align-items: flex-end; }
 
-textarea#input {
-  flex: 1;
-  font: 15px/1.5 var(--sans);
+/* One border treatment, one focus ring and one height for every input and
+   select in the interface. */
+textarea#input,
+select#tool-picker,
+.field input,
+.field select {
+  font: var(--t-base)/var(--lh-base) var(--mono);
   color: var(--ink);
   background: var(--ground);
-  border: 1px solid var(--rule-2);
-  border-radius: 3px;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
+  padding: 0 var(--s2);
+  height: var(--control);
+}
+textarea#input:hover,
+select#tool-picker:hover,
+.field input:hover,
+.field select:hover { border-color: var(--ink-3); }
+
+textarea#input {
+  flex: 1;
+  font: var(--t-body)/var(--lh-base) var(--sans);
   padding: var(--s2) var(--s3);
   resize: none;
   min-height: 2.6rem;
+  height: auto;
   max-height: 9rem;
 }
-textarea#input:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; border-color: var(--accent); }
+textarea#input::placeholder,
+.field input::placeholder { color: var(--ink-3); }
 
-button#send {
-  font: 13px/1 var(--mono);
-  color: var(--surface);
-  background: var(--accent);
-  border: 1px solid var(--accent);
-  border-radius: 3px;
+/* Filled control: the one primary action per composer. */
+button#send, button#tool-run {
+  font: var(--t-base)/var(--lh-flat) var(--mono);
+  color: var(--on-accent);
+  background: var(--accent-fill);
+  border: 1px solid var(--accent-fill);
+  border-radius: var(--radius);
   padding: 0 var(--s4);
   height: 2.6rem;
   cursor: pointer;
+  transition: background-color 100ms, border-color 100ms;
 }
-button#send:disabled { background: var(--ink-3); border-color: var(--ink-3); cursor: default; }
+button#tool-run { height: var(--control); }
+button#send:hover:not(:disabled),
+button#tool-run:hover:not(:disabled) {
+  background: var(--accent-ink);
+  border-color: var(--accent-ink);
+}
+button#send:disabled, button#tool-run:disabled {
+  background: var(--ink-3);
+  border-color: var(--ink-3);
+  cursor: default;
+}
 
-.footnote { margin-top: var(--s2); font: 11.5px var(--mono); color: var(--ink-3); }
+/* Outlined control: the secondary action. */
+button.ghost {
+  font: var(--t-base)/var(--lh-flat) var(--mono);
+  color: var(--ink-2);
+  background: none;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
+  padding: 0 var(--s3);
+  height: var(--control);
+  cursor: pointer;
+  transition: color 100ms, border-color 100ms;
+}
+button.ghost:hover { border-color: var(--accent); color: var(--accent-ink); }
+
+.footnote {
+  margin-top: var(--s2);
+  font: var(--t-meta)/var(--lh-base) var(--mono);
+  color: var(--ink-3);
+}
 
 /* --- the generated parameter form ---------------------------------------
-   Every label, range and default here is the tool's own schema. The panel can
-   grow past the fold on a tool with many parameters, so it scrolls itself
-   rather than pushing the thread off screen. */
+   Every label, bound and default here is read from the tool's own JSON
+   Schema. The panel scrolls itself rather than pushing the thread off
+   screen, because a tool with nine parameters is taller than the fold. */
 
 #composer-tools { max-height: 58vh; overflow-y: auto; }
 
@@ -532,128 +852,130 @@ button#send:disabled { background: var(--ink-3); border-color: var(--ink-3); cur
   flex-wrap: wrap;
 }
 .picker-label {
-  font: 11.5px var(--mono);
+  font: var(--t-meta) var(--mono);
   letter-spacing: 0.05em;
   text-transform: uppercase;
   color: var(--ink-3);
 }
-
-select#tool-picker {
-  font: 13px/1 var(--mono);
-  color: var(--ink);
-  background: var(--ground);
-  border: 1px solid var(--rule-2);
-  border-radius: 3px;
-  padding: 0 var(--s2);
-  height: 2.4rem;
-  min-width: 16rem;
-}
-select#tool-picker:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
-
-button#tool-run {
-  font: 13px/1 var(--mono);
-  color: var(--surface);
-  background: var(--accent);
-  border: 1px solid var(--accent);
-  border-radius: 3px;
-  padding: 0 var(--s4);
-  height: 2.4rem;
-  cursor: pointer;
-}
-button#tool-run:disabled { background: var(--ink-3); border-color: var(--ink-3); cursor: default; }
-
-button.ghost {
-  font: 13px/1 var(--mono);
-  color: var(--ink-2);
-  background: none;
-  border: 1px solid var(--rule-2);
-  border-radius: 3px;
-  padding: 0 var(--s3);
-  height: 2.4rem;
-  cursor: pointer;
-}
-button.ghost:hover { border-color: var(--accent); color: var(--accent-ink); }
+select#tool-picker { min-width: 16rem; }
 
 /* The tool's own docstring, verbatim. */
 .tool-describe {
   margin-top: var(--s3);
   max-width: var(--measure);
-  font-size: 13px;
+  font-size: var(--t-base);
+  line-height: var(--lh-base);
   color: var(--ink-2);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s2);
 }
-.tool-describe .origin { margin-right: var(--s2); }
-.tool-describe .demo-note { font: 11.5px var(--mono); color: var(--flag); }
-.tool-describe p { margin: var(--s2) 0 0; white-space: pre-wrap; }
+.tool-describe .demo-note { font: var(--t-meta) var(--mono); color: var(--flag); }
+.tool-describe p {
+  margin: 0;
+  flex-basis: 100%;
+  white-space: pre-wrap;
+}
 
 .tool-fields {
   margin-top: var(--s4);
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
-  gap: var(--s4) var(--s4);
+  gap: var(--s4);
 }
 .tool-fields .no-params {
-  font: 12.5px var(--mono);
+  font: var(--t-sm) var(--mono);
   color: var(--ink-3);
   font-style: italic;
 }
 
 .field label {
-  display: block;
-  font: 12.5px/1.4 var(--mono);
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  font: var(--t-sm)/var(--lh-tight) var(--mono);
   color: var(--ink);
   margin-bottom: var(--s1);
 }
 .field .pname { font-weight: 600; }
-.field .req {
-  margin-left: var(--s2);
-  font-size: 10.5px;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--flag);
-}
-.field input, .field select {
-  width: 100%;
-  font: 13px/1 var(--mono);
-  color: var(--ink);
-  background: var(--ground);
-  border: 1px solid var(--rule-2);
-  border-radius: 3px;
-  padding: 0 var(--s2);
-  height: 2.2rem;
-}
-.field input:focus-visible, .field select:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -1px;
-  border-color: var(--accent);
-}
-.field input::placeholder { color: var(--ink-3); }
+.field .req { color: var(--flag); }
+.field input, .field select { width: 100%; height: 2.2rem; }
+
 /* Schema facts: type, bounds, default. */
-.field .meta { margin-top: var(--s1); font: 11px/1.5 var(--mono); color: var(--ink-3); }
+.field .meta {
+  margin-top: var(--s1);
+  font: var(--t-meta)/var(--lh-base) var(--mono);
+  color: var(--ink-3);
+}
 /* The parameter's own description, as the server wrote it. */
-.field .pdesc { margin-top: var(--s1); font-size: 12px; line-height: 1.5; color: var(--ink-2); }
-.notice {
-  max-width: 62rem; margin: 0 auto var(--s4);
-  font: 12.5px var(--mono);
-  color: var(--flag);
-  border: 1px solid var(--flag);
-  border-radius: 3px;
-  padding: var(--s2) var(--s3);
-  background: var(--flag-soft);
+.field .pdesc {
+  margin-top: var(--s1);
+  font-size: var(--t-sm);
+  line-height: var(--lh-base);
+  color: var(--ink-2);
 }
 
-.intro { max-width: var(--measure); margin: 0 auto var(--s6); color: var(--ink-2); }
-.intro h2 { font-size: 19px; font-weight: 600; color: var(--ink); margin: 0 0 var(--s3); letter-spacing: -0.01em; }
-.intro ul { padding-left: 1.1rem; margin: var(--s3) 0 0; }
-.intro li { margin-bottom: var(--s2); }
-.intro code { font: 12.5px var(--mono); background: var(--surface-2); padding: 1px 4px; border-radius: 2px; }
+/* --- standalone pages: locked, not found --------------------------------
+   Served without the app shell, so they carry their own centring. Same
+   tokens, same type scale, same restraint. */
 
-@media (max-width: 640px) {
+.page {
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: 14vh var(--s5) var(--s7);
+}
+.page h1 {
+  font-size: var(--t-lead);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0 0 var(--s4);
+  line-height: var(--lh-tight);
+}
+.page .status {
+  font: var(--t-meta)/var(--lh-flat) var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  display: block;
+  margin-bottom: var(--s2);
+}
+.page p { color: var(--ink-2); margin: 0 0 var(--s3); }
+.page p:last-child { margin-bottom: 0; }
+.page code {
+  font: var(--t-sm) var(--mono);
+  background: var(--surface-2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-pill);
+  padding: var(--code-pad);
+  color: var(--ink);
+}
+.page ul { padding-left: 1.1rem; color: var(--ink-2); margin: 0 0 var(--s3); }
+.page li { margin-bottom: var(--s2); }
+.page hr {
+  border: 0;
+  border-top: 1px solid var(--rule);
+  margin: var(--s5) 0 var(--s4);
+}
+.page .note {
+  font: var(--t-meta)/var(--lh-base) var(--mono);
+  color: var(--ink-3);
+}
+
+/* --- responsive ---------------------------------------------------------- */
+
+@media (max-width: 720px) {
+  .masthead { padding: var(--s3) var(--s4); }
+  .masthead p { display: none; }        /* the h1 carries the identity alone */
+  .modes { order: 3; margin-left: auto; }
+  .masthead-status { order: 4; flex-basis: 100%; text-align: left; margin-left: 0; }
+
   #thread { padding: var(--s4) var(--s3) var(--s6); }
   .composer { padding: var(--s3); }
-  .grounds dl { grid-template-columns: 1fr; gap: 2px; }
+  #composer-tools { max-height: 64vh; }
+
+  .grounds dl { grid-template-columns: 1fr; gap: var(--s0); }
   .grounds dt { margin-top: var(--s2); }
-  .masthead { gap: var(--s2); }
-  .modes { order: 3; margin-left: auto; }
-  #composer-tools { max-height: 62vh; }
   .tool-fields { grid-template-columns: 1fr; }
+  .page { padding: var(--s7) var(--s4); }
 }

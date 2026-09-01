@@ -683,6 +683,61 @@ as two stacked charts rather than one dual-axis chart. The masthead carries no
 dataset figures at all; every number about the data appears inside a tool card,
 from that tool's JSON.
 
+Every size in `app.css` comes from one of two scales — six type steps, an
+8-step 4px space scale — and every card section shares one horizontal padding,
+so the tool name, the parameters, the figure, the n block and the cost all
+start on the same vertical line. Two optical values sit deliberately off the
+grid (`--pill-pad`, `--code-pad`) because a 10.5px badge looks wrong on layout
+spacing; they are named tokens rather than guesses at each use. Colour appears
+exactly once in the sheet, in the token blocks. Four tests enforce all of this:
+a stray `font-size: 14px`, a `padding: 17px`, a hex colour in a rule, a
+`box-shadow`, a removed focus ring, or a token with no dark value each fail the
+suite rather than merely looking wrong.
+
+**Contrast is measured, not judged.** Every ink/surface pair meets 4.5:1 and
+every control boundary, data mark and focus ring meets 3:1, in both themes.
+That drove three token changes: `--ink-3` was darkened (it carries most of the
+11–12px metadata and sat at 3.4:1 on `--surface-2`), filled buttons got
+`--accent-fill` because white on `--accent` was 4.3:1, and controls got a
+dedicated `--edge` at 3:1 — the hairline `--rule` tokens stay decorative and
+are correctly exempt.
+
+**Accessibility.** Each chart is `role="img"` with a label built by
+`figureDesc()` from the envelope: the measure, the mark count, the unit one row
+counts, the n, and what the threshold excluded — so a screen-reader user gets
+the same grounding the card shows everyone else. Tables carry `scope="col"` and
+a hidden caption; the figure scrolls, so it is focusable; the mode toggle is a
+real tablist with roving tabindex and arrow keys; state is never colour alone
+(the status dot has text beside it, flagged rows are labelled, unsourced
+numerals are underlined); and a polite live region narrates each call.
+
+### Not for indexing
+
+The console is private, token-gated, and its URL carries the access key, so
+every response sends `X-Robots-Tag: noindex, nofollow, noarchive, nosnippet`
+and `/robots.txt` returns `Disallow: /` — the one route deliberately readable
+without the key, since a crawler that cannot fetch it never learns to stay
+away. The page repeats the directive in a `<meta name="robots">` that survives
+being saved.
+
+The key gets three separate protections. `Referrer-Policy: no-referrer` on
+every response means it cannot reach a third party's logs; the client deletes
+`?k=` from the address bar with `history.replaceState` once the cookie is set,
+so it leaves the URL bar, the history entry and any screenshot; and no page
+ever writes it into an href — the app shell creates no `<a>` elements at all,
+and the locked page's placeholder is the literal string `<key>`. A test asserts
+all three.
+
+A CSP (`default-src 'self'`, no `unsafe-inline`, `img-src 'self' data:` for the
+inline SVG favicon) makes "zero external requests" enforceable rather than
+merely true today: no fonts, no CDN, no analytics, and an added one fails in
+the browser console instead of shipping quietly.
+
+A missing key gets a styled 401 that explains what `?k=` is and where the key
+lives, and an unknown path gets a styled 404 naming what missed — both in the
+console's own design, from `webchat/pages.py`. An unknown `/api/` path returns
+JSON instead, because that is what a `fetch()` there can read.
+
 Conversation history is held server-side in memory, keyed by an `HttpOnly`
 cookie, rather than posted back by the client each turn. That is a correctness
 choice: a client that supplied the history could forge tool results into the

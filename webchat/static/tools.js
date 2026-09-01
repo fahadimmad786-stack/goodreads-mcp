@@ -26,6 +26,7 @@
  */
 
 import { renderToolCard, renderRefusalCard, renderPendingCard, node } from './cards.js';
+import { announce } from './live.js';
 
 const thread = document.getElementById('thread');
 const pane = document.getElementById('pane-tools');
@@ -63,7 +64,9 @@ export async function initToolMode() {
   if (loaded) return;
   loaded = true;
   picker.disabled = true;
+  picker.setAttribute('aria-busy', 'true');
   picker.replaceChildren(node('option', '', 'loading the tool list…'));
+  fieldsBox.replaceChildren(node('div', 'empty', 'fetching the tool schemas over MCP…'));
 
   let payload;
   try {
@@ -72,13 +75,17 @@ export async function initToolMode() {
     if (!r.ok) throw new Error(payload.error || `request failed (${r.status})`);
   } catch (err) {
     loaded = false;
+    picker.removeAttribute('aria-busy');
     picker.replaceChildren(node('option', '', 'tool list unavailable'));
+    fieldsBox.replaceChildren(node('div', 'empty',
+      'no schemas, so no form — the tool list could not be fetched'));
     notice(err.message || 'could not reach the console backend');
     return;
   }
 
   catalogue = payload.tools || [];
   picker.disabled = false;
+  picker.removeAttribute('aria-busy');
   picker.replaceChildren();
   for (const tool of catalogue) {
     const option = node('option', '', tool.name);
@@ -121,7 +128,6 @@ function select(name, values) {
   for (const field of fields) {
     fieldsBox.appendChild(renderField(field, values && values[field.name]));
   }
-  runButton.textContent = 'run';
 }
 
 /* JSON Schema -> the facts one form field needs. Nothing tool-specific: the
@@ -301,6 +307,9 @@ async function submit() {
 
   busy = true;
   runButton.disabled = true;
+  runButton.setAttribute('aria-busy', 'true');
+  runButton.textContent = 'running…';
+  announce(`running ${tool.name}`);
   const intro = document.getElementById('intro-tools');
   if (intro) intro.remove();
 
@@ -325,12 +334,15 @@ async function submit() {
     if (!r.ok) {
       /* A console-level rejection — rate limit, unknown tool, malformed body.
        * Not a tool refusal, so it must not be dressed up as one. */
-      body.replaceChildren(noticeBox(frame.error || `request failed (${r.status})`));
+      const message = frame.error || `request failed (${r.status})`;
+      body.replaceChildren(noticeBox(message));
+      announce(message);
       finish();
       return;
     }
   } catch (err) {
     body.replaceChildren(noticeBox('could not reach the console backend'));
+    announce('could not reach the console backend');
     finish();
     return;
   }
@@ -339,12 +351,17 @@ async function submit() {
     ? renderRefusalCard(frame)
     : renderToolCard(frame);
   body.replaceChildren(card);
+  announce(frame.type === 'tool_refusal'
+    ? `${tool.name} was refused: ${frame.kind.replace('_', ' ')}`
+    : `${tool.name} returned a result`);
   finish();
 }
 
 function finish() {
   busy = false;
   runButton.disabled = false;
+  runButton.removeAttribute('aria-busy');
+  runButton.textContent = 'run';
   scroll();
 }
 

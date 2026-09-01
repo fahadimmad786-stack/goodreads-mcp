@@ -3,7 +3,9 @@ The HTTP surface: static assets, a health probe, and two ways to reach a tool.
 
 `/api/chat` streams a model turn; `/api/run` invokes one tool with parameters a
 person filled in, and `/api/tools` hands the client the schemas to build that
-form from. Chat needs an Anthropic key and is simply not offered without one;
+form from. `/robots.txt` and a response header ask every crawler to stay out:
+the console is private, its URL carries an access key, and nothing here should
+ever appear in an index. Chat needs an Anthropic key and is simply not offered without one;
 the tool routes need none, so the service starts and is fully useful with no
 model behind it at all.
 
@@ -28,6 +30,8 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import (
     HTMLResponse,
@@ -38,7 +42,7 @@ from starlette.responses import (
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import config, frames
+from . import config, frames, pages
 from .mcp_client import MCPBridge
 from .session import RateLimiter, SessionStore
 
@@ -101,9 +105,10 @@ def _client_key(request: Request) -> str:
 
 async def index(request: Request) -> HTMLResponse:
     if not _authorised(request):
-        return HTMLResponse(_locked_page(), status_code=401)
+        return _locked(request)
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     response = HTMLResponse(html)
+    response.headers["Cache-Control"] = "no-store"
     _set_auth_cookie(response, request)
     return response
 
@@ -337,26 +342,99 @@ def _sse(frame: dict) -> bytes:
     return f"data: {json.dumps(frame, default=str)}\n\n".encode()
 
 
-def _locked_page() -> str:
-    return (
-        "<!doctype html><meta charset=utf-8>"
-        "<title>goodreads-stats</title>"
-        "<style>body{font:15px/1.6 ui-sans-serif,system-ui,sans-serif;"
-        "max-width:34rem;margin:18vh auto;padding:0 1.5rem;color:#1b1b1d}"
-        "code{font-family:ui-monospace,monospace;background:#f0efec;padding:.1em .35em}"
-        "</style>"
-        "<h1 style='font-size:1.25rem;font-weight:600'>goodreads-stats console</h1>"
-        "<p>This console needs an access key. Open it with "
-        "<code>?k=&lt;key&gt;</code> appended to the URL.</p>"
-        "<p style='color:#6b6b70'>The key exists because the service pays for "
-        "what it serves: BigQuery bytes for every tool call, and Anthropic "
-        "tokens too when the chat mode is configured.</p>"
+def _locked(request: Request) -> HTMLResponse:
+    """
+    401 as a page, not as a bare status line.
+
+    Someone who reaches this is either a person who mislaid the URL or a
+    stranger who guessed the host. The page explains what `?k=` is and where
+    the key is kept; it contains no key and no hint of one.
+    """
+    response = HTMLResponse(pages.locked(), status_code=401)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+async def not_found(request: Request, exc: Exception) -> HTMLResponse | JSONResponse:
+    """
+    404 in the shape the caller was asking for.
+
+    An unknown /api/ path gets JSON, because that is what a fetch() there can
+    read; anything else gets the styled page.
+    """
+    path = request.url.path
+    if path.startswith("/api/"):
+        return JSONResponse({"error": "no such endpoint"}, status_code=404)
+    return HTMLResponse(pages.not_found(path), status_code=404)
+
+
+async def robots(request: Request) -> PlainTextResponse:
+    """
+    Deliberately anti-SEO, and deliberately public.
+
+    This is the one thing on the service that must be readable without the
+    access token: a crawler that cannot fetch robots.txt does not learn to
+    stay away. `X-Robots-Tag` on every response is the belt to this braces --
+    robots.txt asks a crawler not to fetch, the header tells one that fetched
+    anyway not to index.
+    """
+    return PlainTextResponse(
+        "# This console is private and token-gated. Nothing here is for indexing.\n"
+        "User-agent: *\n"
+        "Disallow: /\n",
+        headers={"Cache-Control": "public, max-age=86400"},
     )
 
 
 # --------------------------------------------------------------------------
 # app
 # --------------------------------------------------------------------------
+
+
+# The page loads its own stylesheet and its own modules and nothing else: no
+# fonts, no CDN, no analytics, no third-party anything. A CSP is the only way
+# to say that in a form a browser will enforce, so a future edit that adds an
+# external asset fails loudly in the console instead of quietly shipping.
+#
+# `img-src data:` is for the inline SVG favicon. There is no 'unsafe-inline'
+# anywhere: no markup in this service carries a <style> block or a style
+# attribute. (Assigning `element.style.x` from a module is unaffected -- CSP
+# governs style parsed from markup, not the CSSOM.)
+CSP = (
+    "default-src 'self'; "
+    "script-src 'self'; "
+    "style-src 'self'; "
+    "img-src 'self' data:; "
+    "connect-src 'self'; "
+    "font-src 'self'; "
+    "object-src 'none'; "
+    "base-uri 'none'; "
+    "form-action 'none'; "
+    "frame-ancestors 'none'"
+)
+
+SECURITY_HEADERS = {
+    # Anti-indexing, the header half. robots.txt asks a crawler not to fetch;
+    # this tells one that fetched anyway not to index, and applies to every
+    # response including the static assets and the JSON routes.
+    "X-Robots-Tag": "noindex, nofollow, noarchive, nosnippet, noimageindex",
+    # The URL can carry ?k=<access token>. Without this, following any
+    # outbound link would put that token in a third party's Referer log. The
+    # page has no outbound links, and this makes that non-negotiable rather
+    # than merely true today.
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Content-Security-Policy": CSP,
+}
+
+
+class SecurityHeaders(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        for name, value in SECURITY_HEADERS.items():
+            response.headers.setdefault(name, value)
+        return response
 
 
 def create_app() -> Starlette:
@@ -388,8 +466,11 @@ def create_app() -> Starlette:
 
     app = Starlette(
         lifespan=lifespan,
+        middleware=[Middleware(SecurityHeaders)],
+        exception_handlers={404: not_found},
         routes=[
             Route("/", index, methods=["GET"]),
+            Route("/robots.txt", robots, methods=["GET"]),
             Route("/api/health", health, methods=["GET"]),
             Route("/api/chat", chat, methods=["POST"]),
             Route("/api/tools", tools, methods=["GET"]),

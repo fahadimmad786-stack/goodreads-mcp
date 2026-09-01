@@ -1013,3 +1013,320 @@ def test_tool_mode_has_its_own_spend_window(tool_client, monkeypatch):
     blocked = client.post("/api/run", json={"tool": "stats_by_year", "params": {}})
     assert blocked.status_code == 429
     assert "tool calls" in blocked.json()["error"]
+
+
+# --- page identity, anti-indexing, and the styled error pages --------------
+#
+# The console is private and its URL carries an access key, so two things have
+# to hold on every response: nothing invites a crawler, and nothing leaks the
+# key. Both are cheap to assert and expensive to notice by hand.
+
+
+def _css_without_comments(css: str) -> str:
+    """
+    The declarations alone. Needed because this sheet's comments explain the
+    rules they enforce -- "no gradients, no shadows" is prose about the design,
+    not an instance of breaking it.
+    """
+    return re.sub(r"/\*.*?\*/", " ", css, flags=re.S)
+
+
+def _rules_only(css: str) -> str:
+    """Everything after the token blocks: the rules that consume the scales."""
+    return _css_without_comments(css).split("* { box-sizing", 1)[1]
+
+
+STATIC = WEBCHAT / "static"
+INDEX_HTML = (STATIC / "index.html").read_text(encoding="utf-8")
+APP_CSS = (STATIC / "app.css").read_text(encoding="utf-8")
+
+
+@pytest.fixture(scope="module")
+def anon():
+    """A client with no access token -- what a stranger with the URL gets."""
+    with TestClient(create_app()) as c:
+        yield c
+
+
+def test_robots_txt_disallows_everything_and_needs_no_token(anon):
+    """
+    A crawler that cannot read robots.txt never learns to stay away, so this
+    is the one route that must answer without the access key.
+    """
+    r = anon.get("/robots.txt")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/plain")
+    assert "User-agent: *" in r.text
+    assert "Disallow: /" in r.text
+
+
+def test_every_response_carries_the_noindex_header(anon):
+    """robots.txt asks a crawler not to fetch; this tells one that did not to index."""
+    for path in ("/", "/robots.txt", "/api/health", "/static/app.css", "/nope"):
+        tag = anon.get(path).headers.get("X-Robots-Tag", "")
+        assert "noindex" in tag and "nofollow" in tag, path
+
+
+def test_the_page_carries_a_noindex_meta_as_well_as_the_header():
+    """The header covers the fetch; the meta survives the page being saved."""
+    assert '<meta name="robots" content="noindex, nofollow' in INDEX_HTML
+
+
+def test_every_response_forbids_sending_a_referrer(anon):
+    """
+    The URL can carry ?k=<access token>. Without this, any outbound navigation
+    would put the token in a third party's Referer log.
+    """
+    for path in ("/", "/robots.txt", "/api/health", "/nope"):
+        assert anon.get(path).headers.get("Referrer-Policy") == "no-referrer", path
+
+
+def test_the_page_has_a_real_title_description_and_favicon():
+    assert "<title>goodreads-stats console</title>" in INDEX_HTML
+    assert '<meta name="description"' in INDEX_HTML
+    # Inline data: URI -- the page must make no external request for an icon.
+    assert 'rel="icon" href="data:image/svg+xml,' in INDEX_HTML
+    assert '<meta name="theme-color"' in INDEX_HTML
+
+
+def test_the_page_requests_nothing_from_outside_this_origin():
+    """
+    No analytics, no CDN, no web font. Asserted over the markup, the stylesheet
+    and every module, because one careless `https://` is all it takes.
+    """
+    sources = {"index.html": INDEX_HTML, "app.css": APP_CSS}
+    for path in STATIC.glob("*.js"):
+        sources[path.name] = path.read_text(encoding="utf-8")
+    sources["pages.py"] = (WEBCHAT / "pages.py").read_text(encoding="utf-8")
+
+    for name, text in sources.items():
+        for line in text.splitlines():
+            if "http://" not in line and "https://" not in line:
+                continue
+            # The SVG namespace is an identifier, not a fetch; the locked page
+            # shows the URL *shape* as escaped text inside <code>.
+            allowed = "www.w3.org/2000/svg" in line or "&lt;this-host&gt;" in line
+            assert allowed, f"{name} reaches outside the origin: {line.strip()[:90]}"
+
+
+def test_the_content_security_policy_forbids_third_party_anything(anon):
+    csp = anon.get("/").headers["Content-Security-Policy"]
+    assert "default-src 'self'" in csp
+    assert "frame-ancestors 'none'" in csp
+    # The inline SVG favicon is the only data: source needed.
+    assert "img-src 'self' data:" in csp
+    # No escape hatch: an inline <style> or <script> must stay impossible.
+    assert "unsafe-inline" not in csp and "unsafe-eval" not in csp
+
+
+# --- the two error pages ---------------------------------------------------
+
+
+def test_an_unknown_page_is_a_styled_404_not_a_bare_status(anon):
+    r = anon.get("/does/not/exist")
+    assert r.status_code == 404
+    assert r.headers["content-type"].startswith("text/html")
+    assert "/static/app.css" in r.text          # the console's own design
+    assert "does/not/exist" in r.text           # names what missed
+    assert "404" in r.text
+
+
+def test_an_unknown_api_path_is_json_because_that_is_what_fetch_can_read(anon):
+    r = anon.get("/api/does-not-exist")
+    assert r.status_code == 404
+    assert r.json() == {"error": "no such endpoint"}
+
+
+def test_the_404_page_escapes_the_path_it_names(anon):
+    """The path is caller-controlled text and lands in the markup."""
+    r = anon.get("/%3Cscript%3Ealert(1)%3C/script%3E")
+    assert r.status_code == 404
+    assert "<script>alert(1)" not in r.text
+    assert "&lt;script&gt;" in r.text
+
+
+def test_the_locked_page_explains_the_access_key_instead_of_just_refusing(anon):
+    r = anon.get("/")
+    assert r.status_code == 401
+    assert r.headers["content-type"].startswith("text/html")
+    assert "/static/app.css" in r.text
+    assert "?k=" in r.text                       # says what the parameter is
+    assert "chat-access-token" in r.text         # says where the key lives
+    assert "HttpOnly" in r.text                  # says what happens next
+
+
+def test_no_response_ever_writes_the_access_token_into_a_link(anon):
+    """
+    The whole point of the gate is that the reader does not have the key. The
+    placeholder is the literal string `<key>`, never a real one -- checked on
+    the locked page, the 404 page, and the app shell itself.
+    """
+    authorised = TestClient(create_app())
+    pages_seen = [
+        anon.get("/").text,
+        anon.get("/nope").text,
+        authorised.get(f"/?k={ACCESS}").text,
+    ]
+    for text in pages_seen:
+        assert ACCESS not in text, "a page echoed the access token"
+        for href in re.findall(r'href="([^"]*)"', text):
+            assert "k=" not in href, f"a link carries an access key: {href[:60]}"
+
+
+def test_the_app_shell_creates_no_links_at_all():
+    """
+    Structural backstop for the test above: the only way a token could reach an
+    href at runtime is if the client built one, and it never does.
+    """
+    for path in STATIC.glob("*.js"):
+        text = path.read_text(encoding="utf-8")
+        assert "createElement('a'" not in text, path.name
+        assert ".href =" not in text, path.name
+
+
+def test_the_client_strips_the_key_from_the_address_bar_after_the_cookie_is_set():
+    """
+    The cookie is the durable credential; leaving ?k= in the URL after that
+    leaves it in history, in screenshots, and in anything copied from the bar.
+    """
+    app_js = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert "searchParams.delete('k')" in app_js
+    assert "history.replaceState" in app_js
+
+
+# --- accessibility invariants ---------------------------------------------
+
+
+def test_every_chart_is_labelled_with_its_measure_its_n_and_its_unit():
+    """
+    A chart is role="img", so it is a single node to a screen reader and its
+    label has to carry what the card shows visually. `figureDesc` is what puts
+    the n, the unit and the threshold into that label; a chart call that
+    forgot it would silently narrate less than the card shows.
+    """
+    cards = (STATIC / "cards.js").read_text(encoding="utf-8")
+    charts = (STATIC / "charts.js").read_text(encoding="utf-8")
+
+    # Every chart the cards draw passes a description.
+    calls = len(re.findall(r"\b(?:hbars|vbars|lineSeries)\(\{", cards))
+    described = cards.count("desc: figureDesc(")
+    assert calls == described, f"{calls} chart calls but {described} descriptions"
+
+    # And the description is built from the envelope's own grounding.
+    body = cards.split("function figureDesc(", 1)[1].split("\n}", 1)[0]
+    for token in ("env.n", "filters", "unit", "excluded", "min_ratings"):
+        assert token in body, f"figureDesc ignores {token}"
+
+    # charts.js sets it as a label, not merely a tooltip.
+    assert "setAttribute('aria-label'" in charts
+    assert "role: 'img'" in charts
+
+
+def test_data_tables_carry_column_scope_and_a_caption():
+    cards = (STATIC / "cards.js").read_text(encoding="utf-8")
+    assert "setAttribute('scope', 'col')" in cards
+    assert "node('caption', 'sr-only'" in cards
+
+
+def test_the_scrollable_figure_is_reachable_from_the_keyboard():
+    """A region that scrolls must be operable without a mouse (WCAG 2.1.1)."""
+    cards = (STATIC / "cards.js").read_text(encoding="utf-8")
+    assert "figure.tabIndex = 0" in cards
+    assert "overflow-x: auto" in APP_CSS
+
+
+def test_focus_is_always_visible_and_never_switched_off():
+    """
+    The one thing that silently ruins keyboard use. Asserted as an invariant of
+    the stylesheet: a focus ring is defined, and nothing anywhere removes one.
+    """
+    assert ":focus-visible {" in APP_CSS
+    assert "outline: 2px solid var(--focus)" in APP_CSS
+    assert "outline: none" not in APP_CSS
+    assert "outline: 0" not in APP_CSS
+
+
+def test_the_mode_toggle_is_a_keyboard_operable_tablist():
+    app_js = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert 'role="tablist"' in INDEX_HTML
+    assert 'role="tab"' in INDEX_HTML
+    assert 'role="tabpanel"' in INDEX_HTML
+    # Roving tabindex plus arrow keys is the tablist contract.
+    assert "ArrowRight" in app_js and "ArrowLeft" in app_js
+    assert "tabIndex = selected ? 0 : -1" in app_js
+
+
+def test_state_is_never_signalled_by_colour_alone():
+    """
+    The status dot has a text status beside it, the flagged row is labelled as
+    well as tinted, and an unsourced numeral is underlined as well as inked.
+    """
+    assert 'id="status" role="status"' in INDEX_HTML
+    assert 'id="status-dot" aria-hidden="true"' in INDEX_HTML
+    assert "content: \" placeholder-inflated\"" in APP_CSS
+    assert "border-bottom: 1px dashed var(--flag)" in APP_CSS
+
+
+def test_the_page_offers_a_skip_link_and_a_live_region():
+    assert 'class="skip-link" href="#thread"' in INDEX_HTML
+    assert 'id="live" role="status" aria-live="polite"' in INDEX_HTML
+
+
+def test_motion_is_dropped_when_the_reader_asks_for_less():
+    assert "prefers-reduced-motion: reduce" in APP_CSS
+
+
+# --- the design system holds together --------------------------------------
+
+
+def test_both_themes_define_every_colour_token():
+    """
+    A token defined only in the light block renders as nothing in dark mode.
+    Assert the dark override covers exactly the colours, and no colour is
+    introduced for the first time inside the media query.
+    """
+    light = APP_CSS.split(":root {", 1)[1].split("\n}", 1)[0]
+    dark = APP_CSS.split("prefers-color-scheme: dark", 1)[1].split("\n  }", 1)[0]
+
+    colour = re.compile(r"^\s*(--[\w-]+):\s*(#|rgba?\()", re.MULTILINE)
+    light_colours = {m.group(1) for m in colour.finditer(light)}
+    dark_colours = {m.group(1) for m in colour.finditer(dark)}
+
+    assert light_colours, "no colour tokens found; check the parse"
+    orphan = dark_colours - light_colours
+    assert not orphan, f"defined only in the dark block: {sorted(orphan)}"
+    # Every ink and surface is re-stated for dark; the two accents that do not
+    # change are the soft washes, which are alpha over whatever sits beneath.
+    for token in ("--ink", "--ink-2", "--ink-3", "--ground", "--surface", "--edge", "--accent"):
+        assert token in dark_colours, f"{token} has no dark value"
+
+
+def test_the_stylesheet_uses_its_own_scales_rather_than_loose_pixels():
+    """
+    The design pass's central claim. Sizes come from the type scale or the
+    space scale, so a stray `font-size: 14px` or `padding: 17px` is a
+    regression rather than a preference.
+    """
+    body = _rules_only(APP_CSS)
+    stray_font = re.findall(r"font-size:\s*(\d+(?:\.\d+)?)px", body)
+    assert not stray_font, f"font sizes bypassing the scale: {stray_font}"
+
+    strays = []
+    for prop, value in re.findall(r"\b(padding|margin|gap):\s*([^;]+);", body):
+        for token in value.split():
+            # 0, 1px hairlines and 2px optical nudges are allowed literals.
+            if re.fullmatch(r"\d+px", token) and int(token[:-2]) > 2:
+                strays.append(f"{prop}: {value.strip()}")
+    assert not strays, f"spacing bypassing the scale: {sorted(set(strays))}"
+
+
+def test_no_shadow_gradient_or_second_accent_creeps_in():
+    """The restraint is the design. Assert it rather than trusting review."""
+    declarations = _css_without_comments(APP_CSS)
+    assert "box-shadow" not in declarations
+    assert "gradient" not in declarations
+    # Every colour in the sheet is declared once, in the token blocks.
+    rules = _rules_only(APP_CSS)
+    assert not re.search(r"#[0-9a-fA-F]{3,8}\b", rules), \
+        "a colour is used outside the token block"
+    assert len(re.findall(r"#[0-9a-fA-F]{6}\b", declarations)) > 20

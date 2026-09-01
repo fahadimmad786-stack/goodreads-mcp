@@ -7,6 +7,13 @@
  * One series per chart, so one accent colour and no legend -- the figure label
  * names the measure. Two measures never share an axis; the caller draws two
  * charts instead.
+ *
+ * Every chart is role="img" with an aria-label the caller supplies: the
+ * measure, the category, how many marks, and -- crucially -- the n the figure
+ * rests on and the unit one row counts. A chart whose description omitted its
+ * n would tell a screen-reader user less than the card tells everyone else,
+ * which would break this console's one promise. `desc` comes from cards.js,
+ * which holds the envelope; charts.js only draws.
  */
 
 const NS = 'http://www.w3.org/2000/svg';
@@ -31,10 +38,19 @@ function svgRoot(w, h, minWidth = 620) {
     class: 'chart',
     viewBox: `0 0 ${w} ${h}`,
     role: 'img',
-    'aria-hidden': 'false',
   });
   s.style.minWidth = `${minWidth}px`;
   return s;
+}
+
+/* role="img" makes the SVG a single node to assistive tech, so the label has
+ * to carry the whole figure. The <title> child is what a pointer tooltip
+ * shows; both say the same thing. */
+function describe(svg, text) {
+  svg.setAttribute('aria-label', text);
+  const title = el('title', {}, text);
+  svg.insertBefore(title, svg.firstChild);
+  return svg;
 }
 
 /* --- one shared tooltip -------------------------------------------------- */
@@ -81,7 +97,7 @@ function truncate(text, max) {
  * No value axis and no ticks. Each bar is labelled with its exact value, so
  * there is nothing to read off a scale and nothing rounded on screen.
  */
-export function hbars({ rows, cat, value, unit, extra }) {
+export function hbars({ rows, cat, value, unit, extra, desc }) {
   const W = 900;
   const rowH = 20;
   const gap = 2;               /* surface gap between adjacent bars */
@@ -112,12 +128,12 @@ export function hbars({ rows, cat, value, unit, extra }) {
       x: gutter + w + 8, y: y + rowH * 0.72, class: 'value',
     }, fmt(v)));
   });
-  svg.setAttribute('aria-label', `${unit || value} by ${cat}, ${rows.length} rows`);
-  return svg;
+  return describe(svg, desc
+    || `Bar chart: ${unit || value} by ${cat}, ${rows.length} bars.`);
 }
 
 /* --- vertical bars: histograms, months, bands --------------------------- */
-export function vbars({ rows, cat, value, unit, extra, rotate }) {
+export function vbars({ rows, cat, value, unit, extra, rotate, desc }) {
   const W = 900;
   const H = 236;
   const top = 22;
@@ -159,8 +175,8 @@ export function vbars({ rows, cat, value, unit, extra, rotate }) {
     }
     svg.appendChild(label);
   });
-  svg.setAttribute('aria-label', `${unit || value} by ${cat}, ${rows.length} bars`);
-  return svg;
+  return describe(svg, desc
+    || `Bar chart: ${unit || value} by ${cat}, ${rows.length} bars.`);
 }
 
 /* --- line: one measure over publication year ---------------------------
@@ -168,7 +184,7 @@ export function vbars({ rows, cat, value, unit, extra, rotate }) {
  * are compact scale marks; the exact figures are the endpoint labels and the
  * hover readout, and the table below the chart carries every value.
  */
-export function lineSeries({ rows, x, y, unit, extra }) {
+export function lineSeries({ rows, x, y, unit, extra, desc }) {
   const W = 900;
   const H = 210;
   const m = { t: 16, r: 20, b: 28, l: 62 };
@@ -251,8 +267,8 @@ export function lineSeries({ rows, x, y, unit, extra }) {
     hideTip();
   });
   svg.appendChild(hit);
-  svg.setAttribute('aria-label', `${unit || y} by ${x}, ${pts.length} points`);
-  return svg;
+  return describe(svg, desc
+    || `Line chart: ${unit || y} by ${x}, ${pts.length} points.`);
 }
 
 function tipHtml(row, cat, value, unit, extra = []) {

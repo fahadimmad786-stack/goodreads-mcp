@@ -3,10 +3,29 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+
 <title>goodreads-stats console</title>
+<meta name="description" content="Private console for the goodreads-stats MCP server: aggregate statistics over 1.85M Goodreads editions in BigQuery, every figure rendered with its n, its unit and its caveats.">
+
+<!-- This console is private and token-gated, and its URL carries an access
+     key. It must never be indexed, and the key must never travel in a
+     Referer header. The service sends X-Robots-Tag and Referrer-Policy on
+     every response as well; this is the copy that survives being saved. -->
+<meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
+<meta name="referrer" content="no-referrer">
+
+<!-- Inline, so the page makes zero external requests. Three ascending bars
+     on a baseline: the instrument, not a logo. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='5' y='16' width='5' height='9' rx='1.5' fill='%232a78d6'/%3E%3Crect x='13.5' y='10' width='5' height='15' rx='1.5' fill='%232a78d6'/%3E%3Crect x='22' y='5' width='5' height='20' rx='1.5' fill='%232a78d6'/%3E%3Crect x='4' y='27' width='24' height='2' rx='1' fill='%238b8780'/%3E%3C/svg%3E">
+<meta name="theme-color" content="#fcfcfb" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1a1a19" media="(prefers-color-scheme: dark)">
+<meta name="color-scheme" content="light dark">
+
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
+
+<a class="skip-link" href="#thread">Skip to results</a>
 
 <header class="masthead">
   <div>
@@ -16,21 +35,21 @@
 
   <!-- Which path fetches the envelope. The rendering below is the same either
        way, which is the point of offering both. -->
-  <div class="modes" id="modes" role="tablist" aria-label="mode">
+  <div class="modes" id="modes" role="tablist" aria-label="Console mode">
     <button type="button" id="mode-chat" role="tab" aria-selected="false"
-            aria-controls="pane-chat">chat</button>
+            aria-controls="pane-chat" tabindex="-1">chat</button>
     <button type="button" id="mode-tools" role="tab" aria-selected="false"
-            aria-controls="pane-tools">tools</button>
+            aria-controls="pane-tools" tabindex="-1">tools</button>
   </div>
 
-  <div class="masthead-status">
-    <span class="dot" id="status-dot"></span>
-    <span id="status">connecting…</span>
-  </div>
+  <p class="masthead-status">
+    <span class="dot" id="status-dot" aria-hidden="true"></span>
+    <span id="status" role="status">connecting…</span>
+  </p>
 </header>
 
-<main id="thread">
-  <div class="pane" id="pane-chat">
+<main id="thread" tabindex="-1">
+  <div class="pane" id="pane-chat" role="tabpanel" aria-labelledby="mode-chat">
     <section class="intro" id="intro">
       <h2>Ask a statistical question about 1.85M Goodreads editions.</h2>
       <p>
@@ -48,7 +67,7 @@
     </section>
   </div>
 
-  <div class="pane" id="pane-tools">
+  <div class="pane" id="pane-tools" role="tabpanel" aria-labelledby="mode-tools">
     <section class="intro" id="intro-tools">
       <h2>Call a tool directly. No model in this path.</h2>
       <p>
@@ -67,12 +86,15 @@
   </div>
 </main>
 
+<!-- Narrates what the thread is doing, for a reader who is not watching it. -->
+<p class="sr-only" id="live" role="status" aria-live="polite"></p>
+
 <footer class="composer">
   <div class="composer-inner" id="composer-chat">
     <div class="examples" id="examples"></div>
     <div class="row">
-      <textarea id="input" rows="1" placeholder="Ask about the dataset…"
-                aria-label="Ask about the dataset"></textarea>
+      <label class="sr-only" for="input">Ask a statistical question about the dataset</label>
+      <textarea id="input" rows="1" placeholder="Ask about the dataset…"></textarea>
       <button id="send" type="button">ask</button>
     </div>
     <div class="footnote">enter sends · shift+enter for a new line</div>
@@ -82,7 +104,7 @@
     <div class="examples" id="tool-presets"></div>
     <div class="tool-head">
       <label class="picker-label" for="tool-picker">tool</label>
-      <select id="tool-picker" aria-label="tool"></select>
+      <select id="tool-picker"></select>
       <button id="tool-run" type="button">run</button>
       <button id="tool-reset" type="button" class="ghost">clear</button>
     </div>

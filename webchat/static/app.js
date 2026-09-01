@@ -17,6 +17,7 @@
 import {
   renderToolCard, renderRefusalCard, renderPendingCard, escapeHtml, node as el,
 } from './cards.js';
+import { announce } from './live.js';
 import { initToolMode } from './tools.js';
 
 const thread = document.getElementById('thread');
@@ -32,6 +33,20 @@ const modeButtons = {
 
 const MODE_KEY = 'gr_mode';
 let chatEnabled = true;
+
+/* The access key arrives as ?k= on the first visit and is exchanged for an
+ * HttpOnly cookie by the server. Once that has happened the query string is
+ * pure liability -- it sits in the address bar, in the back/forward history,
+ * in a screenshot, and in anything the reader copies out of the URL bar. The
+ * page has already loaded, so drop it. (Referrer-Policy: no-referrer covers
+ * the leg this cannot: a request made before the rewrite.) */
+function stripAccessKeyFromUrl() {
+  const url = new URL(window.location.href);
+  if (!url.searchParams.has('k')) return;
+  url.searchParams.delete('k');
+  const clean = url.pathname + (url.search || '') + url.hash;
+  window.history.replaceState(null, '', clean);
+}
 
 const EXAMPLES = [
   { q: 'Which authors are the most read?' },
@@ -166,6 +181,8 @@ async function ask(text) {
   if (busy) return;
   busy = true;
   send.disabled = true;
+  send.setAttribute('aria-busy', 'true');
+  announce('working');
   input.value = '';
   const intro = document.getElementById('intro');
   if (intro) intro.remove();
@@ -225,9 +242,18 @@ function place(turn, frame) {
       break;
     case 'thinking_delta': turn.thinking(frame.text); break;
     case 'text_delta': turn.text(frame.text); break;
-    case 'tool_call': turn.card(renderPendingCard(frame)); break;
-    case 'tool_result': replace(turn, frame, renderToolCard(frame)); break;
-    case 'tool_refusal': replace(turn, frame, renderRefusalCard(frame)); break;
+    case 'tool_call':
+      turn.card(renderPendingCard(frame));
+      announce(`running ${frame.tool}`);
+      break;
+    case 'tool_result':
+      replace(turn, frame, renderToolCard(frame));
+      announce(`${frame.tool} returned a result`);
+      break;
+    case 'tool_refusal':
+      replace(turn, frame, renderRefusalCard(frame));
+      announce(`${frame.tool} was refused: ${frame.kind.replace('_', ' ')}`);
+      break;
     case 'contract': turn.contract(frame); break;
     case 'turn_end': turn.footer(frame); break;
     case 'error': turn.error(frame.message); break;
@@ -238,6 +264,7 @@ function place(turn, frame) {
 function replace(turn, frame, card) {
   const placeholder = turn.answer.querySelector(`[data-call="${frame.id}"]`);
   if (placeholder) {
+    card.dataset.call = frame.id;
     placeholder.replaceWith(card);
     turn.current = null;
     turn.scroll();
@@ -249,6 +276,7 @@ function replace(turn, frame, card) {
 function finish() {
   busy = false;
   send.disabled = false;
+  send.removeAttribute('aria-busy');
   input.focus();
 }
 
@@ -273,15 +301,37 @@ function buildExamples() {
  * and the two composers are pure CSS. Each keeps its own thread, so switching
  * mode never discards what the other one has already fetched. */
 
-function setMode(mode) {
+function setMode(mode, { focusTab = false } = {}) {
   const target = mode === 'chat' && !chatEnabled ? 'tools' : mode;
   document.body.dataset.mode = target;
+  /* Roving tabindex: one tab stop for the whole tablist, arrow keys inside
+   * it. That is the tablist pattern, and it keeps the header from costing
+   * two stops on the way to the composer. */
   for (const [name, button] of Object.entries(modeButtons)) {
-    button.setAttribute('aria-selected', String(name === target));
+    const selected = name === target;
+    button.setAttribute('aria-selected', String(selected));
+    button.tabIndex = selected ? 0 : -1;
   }
+  if (focusTab) modeButtons[target].focus();
   try { localStorage.setItem(MODE_KEY, target); } catch (err) { /* private mode */ }
   if (target === 'tools') initToolMode();
-  else input.focus();
+  else if (focusTab === false) input.focus();
+}
+
+/* Left/right move between tabs, home/end jump to the ends -- the keyboard
+ * contract a tablist advertises by having role="tab". */
+function onTabKey(event) {
+  const order = ['chat', 'tools'].filter((m) => !modeButtons[m].disabled);
+  const current = document.body.dataset.mode;
+  const at = Math.max(order.indexOf(current), 0);
+  let next = null;
+  if (event.key === 'ArrowRight' || event.key === 'ArrowDown') next = order[(at + 1) % order.length];
+  else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') next = order[(at - 1 + order.length) % order.length];
+  else if (event.key === 'Home') next = order[0];
+  else if (event.key === 'End') next = order[order.length - 1];
+  if (!next) return;
+  event.preventDefault();
+  setMode(next, { focusTab: true });
 }
 
 /* Chat is offered only when the server says a key is configured. The button is
@@ -289,9 +339,13 @@ function setMode(mode) {
 function applyChatAvailability(enabled) {
   chatEnabled = enabled;
   modeButtons.chat.disabled = !enabled;
-  modeButtons.chat.title = enabled
+  const why = enabled
     ? 'a model chooses the tool and writes the prose'
     : 'off: this deployment has no ANTHROPIC_API_KEY. The tool mode needs none.';
+  modeButtons.chat.title = why;
+  /* The tooltip is not reachable by keyboard or screen reader, so the reason
+   * is also given as the button's accessible description. */
+  modeButtons.chat.setAttribute('aria-label', `chat mode — ${why}`);
   if (!enabled) modeButtons.chat.appendChild(el('span', 'off', 'no key'));
 }
 
@@ -331,9 +385,11 @@ input.addEventListener('keydown', (e) => {
     if (text) ask(text);
   }
 });
+/* Grow with the content; the cap lives in the stylesheet as max-height, so
+ * the limit is stated once rather than in two places that can disagree. */
 input.addEventListener('input', () => {
   input.style.height = 'auto';
-  input.style.height = `${Math.min(input.scrollHeight, 144)}px`;
+  input.style.height = `${input.scrollHeight}px`;
 });
 send.addEventListener('click', () => {
   const text = input.value.trim();
@@ -342,6 +398,8 @@ send.addEventListener('click', () => {
 
 modeButtons.chat.addEventListener('click', () => setMode('chat'));
 modeButtons.tools.addEventListener('click', () => setMode('tools'));
+document.getElementById('modes').addEventListener('keydown', onTabKey);
 
+stripAccessKeyFromUrl();
 buildExamples();
 loadHealth();
