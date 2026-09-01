@@ -18,7 +18,30 @@ from google.cloud import bigquery
 
 from . import telemetry
 
-PROJECT = os.environ.get("GOODREADS_BQ_PROJECT", "example-project")
+# The project is never hard-coded. It comes from GOODREADS_BQ_PROJECT, or
+# failing that from Application Default Credentials -- which is where the
+# BigQuery client would get it anyway, so on any machine that can actually
+# reach BigQuery this resolves with nothing configured.
+#
+# A sentinel rather than an exception when neither yields one: this module is
+# imported by the offline test suite, which never touches BigQuery and must
+# keep working on a machine with no gcloud at all. `run()` is the single path
+# to BigQuery and refuses there instead, where the message can be useful.
+PROJECT_UNSET = "unconfigured-project"
+
+
+def _discover_project() -> str:
+    """The ADC project, or the sentinel. Never raises: import must not fail."""
+    try:
+        import google.auth
+
+        _, project = google.auth.default()
+        return project or PROJECT_UNSET
+    except Exception:  # noqa: BLE001 -- no credentials, no gcloud, no network
+        return PROJECT_UNSET
+
+
+PROJECT = os.environ.get("GOODREADS_BQ_PROJECT") or _discover_project()
 DATASET = os.environ.get("GOODREADS_BQ_DATASET", "goodreads")
 LOCATION = os.environ.get("GOODREADS_BQ_LOCATION", "US")
 
@@ -81,10 +104,31 @@ def guard(sql: str) -> None:
         )
 
 
+class ProjectUnsetError(RuntimeError):
+    """No BigQuery project could be resolved from the environment or ADC."""
+
+
+def require_project() -> str:
+    """
+    The single place a missing project is refused.
+
+    Checked here rather than at import because importing this module has to
+    keep working with no credentials -- the offline test suite does exactly
+    that, and so does the query guard, which is pure text.
+    """
+    if PROJECT == PROJECT_UNSET:
+        raise ProjectUnsetError(
+            "no BigQuery project configured. Set GOODREADS_BQ_PROJECT, or run "
+            "`gcloud auth application-default login` so it can be discovered "
+            "from Application Default Credentials."
+        )
+    return PROJECT
+
+
 @lru_cache(maxsize=1)
 def client() -> bigquery.Client:
     """BigQuery client on Application Default Credentials."""
-    return bigquery.Client(project=PROJECT)
+    return bigquery.Client(project=require_project())
 
 
 def _scalar(name: str, value: Any) -> bigquery.ScalarQueryParameter:

@@ -45,10 +45,12 @@ GOODREADS_TELEMETRY=0 .venv/bin/python -m goodreads_mcp    # disable
 Ad-hoc BigQuery exploration is easiest with the `bq` CLI, which bypasses the query guards described below:
 
 ```bash
-bq query --nouse_legacy_sql --format=prettyjson 'SELECT ... FROM `example-project.goodreads.books`'
+bq query --nouse_legacy_sql --format=prettyjson 'SELECT ... FROM `${GOODREADS_BQ_PROJECT}.goodreads.books`'
 ```
 
 Env overrides: `GOODREADS_BQ_PROJECT`, `GOODREADS_BQ_DATASET`, `GOODREADS_BQ_LOCATION`, `GOODREADS_MAX_BYTES_BILLED` (default 20 GiB).
+
+**No project id is hard-coded.** `GOODREADS_BQ_PROJECT`, else Application Default Credentials, else the `PROJECT_UNSET` sentinel — which `require_project()` refuses on, from `client()`, so the single BigQuery path is the only place that can fail. Import must never raise: `tests/` imports `bq` with no credentials, and `guard()` is pure text. The shell scripts resolve it from `gcloud config get-value project` and exit if empty.
 
 ## Architecture
 

@@ -14,7 +14,17 @@
 set -euo pipefail
 
 GCLOUD="${GCLOUD:-$HOME/google-cloud-sdk/bin/gcloud}"
-PROJECT="${PROJECT:-example-project}"
+# The project is not hard-coded. It comes from $PROJECT, or from the active
+# gcloud configuration -- which is the account this would deploy under anyway,
+# so on a configured machine it resolves with nothing set. Empty is fatal
+# rather than silently deploying somewhere unintended.
+PROJECT="${PROJECT:-$("${GCLOUD}" config get-value project 2>/dev/null)}"
+
+if [ -z "${PROJECT}" ]; then
+  echo "no GCP project. Set PROJECT=<id>, or pick one with:" >&2
+  echo "  gcloud config set project <id>" >&2
+  exit 1
+fi
 REGION="${REGION:-us-central1}"
 SERVICE="${SERVICE:-goodreads-mcp}"
 PORT="${PORT:-8080}"

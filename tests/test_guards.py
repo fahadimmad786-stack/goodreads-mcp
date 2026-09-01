@@ -859,3 +859,108 @@ def test_bq_run_supplies_every_key_merge_meta_reads():
     src = inspect.getsource(bq.run)
     for key in ("bytes_processed", "bytes_billed", "cache_hit", "bq_ms"):
         assert f'"{key}"' in src, f"bq.run() no longer reports {key}"
+
+
+# --- no account identifier is baked into the source ------------------------
+#
+# The repository is public. A GCP project id is not a credential -- it grants
+# nothing without a matching IAM binding -- but it identifies the account and
+# is trivially avoidable, because the BigQuery client and gcloud both already
+# know which project they are pointed at.
+#
+# These tests deliberately never spell out a real project id, which would put
+# one back into the source they exist to keep clean.
+
+
+import pathlib  # noqa: E402
+import re  # noqa: E402
+import subprocess  # noqa: E402
+import sys  # noqa: E402
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+# A GCP project id is 6-30 chars, lowercase, and very commonly carries the
+# numeric suffix the console appends. Matching the shape rather than a value.
+_PROJECT_SHAPED = re.compile(r"\b[a-z][a-z0-9-]{4,26}-\d{6}\b")
+
+_TEXT_SUFFIXES = {".py", ".sh", ".md", ".toml", ".yaml", ".yml", ".html", ".js", ".css"}
+
+
+def _tracked_text_files():
+    listing = subprocess.run(
+        ["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True
+    )
+    for name in listing.stdout.split():
+        path = ROOT / name
+        if path.suffix in _TEXT_SUFFIXES and path.exists():
+            yield path
+
+
+def test_no_project_shaped_identifier_is_hard_coded_anywhere():
+    found = []
+    for path in _tracked_text_files():
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if _PROJECT_SHAPED.search(line) and "_PROJECT_SHAPED" not in line:
+                found.append(f"{path.relative_to(ROOT)}:{n}")
+    assert not found, f"a project-shaped identifier is hard-coded at: {found}"
+
+
+def test_the_project_comes_from_the_environment_or_adc_never_a_literal():
+    source = (ROOT / "goodreads_mcp" / "bq.py").read_text(encoding="utf-8")
+    # No default argument on the env lookup -- that is where a literal hides.
+    assert 'os.environ.get("GOODREADS_BQ_PROJECT")' in source
+    assert "_discover_project()" in source
+    assert "google.auth" in source
+
+
+def test_importing_bq_never_raises_without_credentials():
+    """
+    The offline suite imports this module, and `guard()` is a pure text check.
+    Neither may depend on a machine having gcloud, so discovery must degrade to
+    a sentinel rather than raise at import.
+    """
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "from goodreads_mcp import bq;"
+         "print(bq.PROJECT);"
+         "bq.guard('SELECT name FROM t')"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        env={"PATH": "/nonexistent", "HOME": "/nonexistent",
+             "CLOUDSDK_CONFIG": "/nonexistent",
+             "PYTHONPATH": str(ROOT)},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "unconfigured-project"
+
+
+def test_a_missing_project_is_refused_on_the_single_bigquery_path():
+    """
+    `client()` is the only way to a query, so that is where an unresolved
+    project has to fail -- loudly, with the instruction to fix it.
+    """
+    from goodreads_mcp import bq
+
+    saved = bq.PROJECT
+    try:
+        bq.PROJECT = bq.PROJECT_UNSET
+        with pytest.raises(bq.ProjectUnsetError, match="GOODREADS_BQ_PROJECT"):
+            bq.require_project()
+    finally:
+        bq.PROJECT = saved
+
+
+def test_the_deploy_scripts_resolve_a_project_and_refuse_an_empty_one():
+    for name in ("deploy.sh", "deploy-chat.sh", "proxy.sh"):
+        script = (ROOT / name).read_text(encoding="utf-8")
+        assert "config get-value project" in script, name
+        assert 'if [ -z "${PROJECT}" ]' in script, f"{name} would deploy with no project"
+
+
+def test_both_service_names_are_overridable():
+    deploy = (ROOT / "deploy.sh").read_text(encoding="utf-8")
+    chat = (ROOT / "deploy-chat.sh").read_text(encoding="utf-8")
+    assert 'SERVICE="${SERVICE:-' in deploy
+    assert 'SERVICE="${SERVICE:-' in chat
+    assert 'MCP_SERVICE="${MCP_SERVICE:-' in chat

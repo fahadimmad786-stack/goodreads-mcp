@@ -13,7 +13,7 @@ context will return confident, wrong numbers.
 
 | | |
 |---|---|
-| Project | `example-project` |
+| Project | `${GOODREADS_BQ_PROJECT}` |
 | Dataset | `goodreads` (location: US) |
 | Tables | `goodreads.books`, `goodreads.user_ratings` |
 

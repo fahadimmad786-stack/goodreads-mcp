@@ -1,7 +1,7 @@
 # goodreads-mcp
 
 An MCP server answering statistical questions about the Goodreads dataset in
-BigQuery (`example-project.goodreads`), built on FastMCP and
+BigQuery (`<project>.goodreads`), built on FastMCP and
 google-cloud-bigquery with Application Default Credentials.
 
 The dataset has defects that produce confident wrong numbers. This server is
@@ -274,13 +274,13 @@ needs no edit. HTTP is a **second** transport, selected by `--transport http`
 or `GOODREADS_TRANSPORT=http`.
 
 ```bash
-./deploy.sh                      # project example-project, region us-central1
+./deploy.sh                      # project <project>, region us-central1
 MIN_INSTANCES=0 ./deploy.sh      # override the warm-instance knob (see below)
 ```
 
 ### IAM: what the service account gets, and why
 
-`goodreads-mcp-run@example-project.iam.gserviceaccount.com` — **read-only**,
+`goodreads-mcp-run@<project>.iam.gserviceaccount.com` — **read-only**,
 **no key files**. Credentials come from the Cloud Run metadata server.
 
 | role | scope | why |
@@ -402,7 +402,7 @@ rate:
 ```bash
 gcloud logging read \
   'resource.type=cloud_run_revision AND resource.labels.service_name=goodreads-mcp AND jsonPayload.tool!=""' \
-  --project example-project --limit 1000 --format json \
+  --project <project> --limit 1000 --format json \
   | goodreads-telemetry --path -
 ```
 
