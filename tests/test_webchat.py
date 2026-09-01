@@ -1,9 +1,11 @@
 """
-Invariants of the chat BFF. No network, no BigQuery, no Anthropic calls.
+Invariants of the console BFF. No network, no BigQuery, no Anthropic calls.
 
-What is worth testing here is not the UI but the three claims the UI makes:
-every caveat can be attached to the figure it qualifies, no numeral in the
-model's prose escapes the checker, and no credential can reach a client.
+What is worth testing here is not the UI but the claims the UI makes: every
+caveat can be attached to the figure it qualifies, no numeral in the model's
+prose escapes the checker, no credential can reach a client, and -- since the
+console has two ways to reach a tool -- that the model-free path is genuinely
+the same path, rendering identical frames from forms nobody hand-wrote.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ from starlette.testclient import TestClient  # noqa: E402
 
 import goodreads_mcp  # noqa: E402
 from goodreads_mcp import caveats, server  # noqa: E402
-from webchat import agent, attach, config, guard_probe, mcp_client, numcheck  # noqa: E402
+from webchat import agent, attach, config, frames, guard_probe, mcp_client, numcheck  # noqa: E402
 from webchat.app import create_app  # noqa: E402
 from webchat.mcp_client import ToolOutcome  # noqa: E402
 from webchat.session import RateLimiter, SessionStore  # noqa: E402
@@ -436,10 +438,16 @@ def test_startup_refuses_without_an_access_token(monkeypatch):
         config.verify()
 
 
-def test_startup_refuses_without_an_anthropic_key(monkeypatch):
+def test_startup_does_not_need_an_anthropic_key(monkeypatch):
+    """
+    The key buys a mode, not the service. Without it the console still starts,
+    still serves, and still answers tool calls -- so it must not be a startup
+    requirement, and the access token must still be one.
+    """
     monkeypatch.setattr(config, "ANTHROPIC_API_KEY", None)
-    with pytest.raises(config.ConfigError, match="ANTHROPIC_API_KEY"):
-        config.verify()
+    config.verify()
+    assert config.chat_enabled() is False
+    assert config.public_settings()["chat_enabled"] is False
 
 
 def test_the_two_mcp_auth_modes_are_mutually_exclusive(monkeypatch):
@@ -609,3 +617,399 @@ def test_every_column_the_cards_read_exists_in_the_servers_sql():
         if name not in client_side and name not in server_text
     )
     assert not missing, f"cards.js reads names the server never produces: {missing}"
+
+
+# --- the no-model mode -----------------------------------------------------
+#
+# The console offers two paths to the same tools. What is worth asserting is
+# not that the second one works but that it is the *same* one: identical
+# frames, identical caveat attachment, forms nobody wrote by hand, and
+# parameters that reach the server exactly as typed -- because the refusal is
+# the interesting result and correcting a value on the way in would hide it.
+
+
+import asyncio  # noqa: E402
+import json  # noqa: E402
+import pathlib  # noqa: E402
+import re  # noqa: E402
+
+WEBCHAT = pathlib.Path(__file__).resolve().parent.parent / "webchat"
+TOOLS_JS = (WEBCHAT / "static" / "tools.js").read_text(encoding="utf-8")
+
+
+def _strip_comments(source: str) -> str:
+    """JavaScript with its comments removed, for tests that read the code."""
+    source = re.sub(r"/\*.*?\*/", " ", source, flags=re.S)
+    return re.sub(r"(?m)^\s*//.*$", " ", source)
+
+
+@pytest.fixture(scope="module")
+def schemas():
+    """
+    The real `tools/list` schemas, in process. No network, no BigQuery --
+    listing tools never executes one.
+    """
+    from fastmcp import Client
+
+    from goodreads_mcp.server import mcp
+
+    async def go():
+        async with Client(mcp) as c:
+            return {t.name: t.inputSchema for t in await c.list_tools()}
+
+    return asyncio.run(go())
+
+
+class _StubBridge:
+    """The MCP bridge with the transport removed; the schemas are the real ones."""
+
+    def __init__(self, schemas, outcome=None):
+        self._catalogue = [
+            {"name": name, "description": "", "schema": schema, "origin": "mcp"}
+            for name, schema in sorted(schemas.items())
+        ]
+        self._catalogue.append(
+            {
+                "name": guard_probe.TOOL_NAME,
+                "description": guard_probe.TOOL_DESCRIPTION,
+                "schema": guard_probe.TOOL_SCHEMA,
+                "origin": "bff",
+            }
+        )
+        self._outcome = outcome
+        self.calls = []
+
+    @property
+    def auth_mode(self):
+        return "proxy"
+
+    async def catalogue(self, refresh=False):
+        return self._catalogue
+
+    async def connect_check(self):
+        return {"mcp": "ok", "tools": len(self._catalogue), "auth": "proxy"}
+
+    async def describe(self, refresh=False):
+        return [], ""
+
+    async def call(self, name, params):
+        self.calls.append((name, params))
+        if self._outcome is not None:
+            return self._outcome
+        return ToolOutcome(tool=name, params=params, kind="ok", envelope={"data": []})
+
+
+@pytest.fixture
+def tool_client(schemas):
+    """A console whose MCP side is stubbed, so the routes can be exercised offline."""
+    app = create_app()
+    bridge = _StubBridge(schemas)
+    app.state.bridge = bridge
+    with TestClient(app) as c:
+        c.headers.update({"x-chat-access": ACCESS})
+        yield c, bridge
+
+
+# --- the service runs with no model at all ---------------------------------
+
+
+def test_the_console_serves_with_no_anthropic_key(monkeypatch):
+    """
+    The whole point of the mode: a keyless deployment starts, serves the page,
+    and reports the tool surface. Only the chat route is gone.
+    """
+    monkeypatch.setattr(config, "ANTHROPIC_API_KEY", None)
+    app = create_app()
+    with TestClient(app) as c:
+        assert app.state.agent is None, "an Anthropic client was built with no key"
+        assert c.get(f"/?k={ACCESS}").status_code == 200
+        body = c.get("/api/health", headers={"x-chat-access": ACCESS}).json()
+        assert body["chat_enabled"] is False
+        assert body["model"] is None
+
+
+def test_chat_refuses_cleanly_without_a_key_and_names_the_mode_that_works(monkeypatch):
+    monkeypatch.setattr(config, "ANTHROPIC_API_KEY", None)
+    with TestClient(create_app()) as c:
+        r = c.post("/api/chat", json={"text": "hi"}, headers={"x-chat-access": ACCESS})
+    assert r.status_code == 503
+    assert "ANTHROPIC_API_KEY" in r.json()["error"]
+    assert "tool mode" in r.json()["error"]
+
+
+def test_the_tool_routes_work_without_a_key(monkeypatch, schemas):
+    monkeypatch.setattr(config, "ANTHROPIC_API_KEY", None)
+    app = create_app()
+    app.state.bridge = _StubBridge(schemas)
+    with TestClient(app) as c:
+        r = c.post(
+            "/api/run",
+            json={"tool": "stats_by_author", "params": {"unit": "works"}},
+            headers={"x-chat-access": ACCESS},
+        )
+    assert r.status_code == 200
+    assert r.json()["type"] == "tool_result"
+
+
+def test_the_anthropic_sdk_is_not_imported_by_the_tool_path():
+    """
+    Structural, not incidental: `frames.py` exists so tool mode can build a
+    card without importing the module that constructs an Anthropic client.
+    """
+    tree = ast.parse((WEBCHAT / "frames.py").read_text(encoding="utf-8"))
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            imported.add(node.module or "")
+        elif isinstance(node, ast.Import):
+            imported.update(a.name for a in node.names)
+    assert not any(m.startswith("anthropic") or m.endswith("agent") for m in imported)
+
+
+# --- both modes render the same frame --------------------------------------
+
+
+def test_both_modes_build_their_frames_with_the_same_function():
+    """Not "equivalent" -- the same object. Two builders would drift."""
+    assert agent._result_frame is frames._result_frame
+    assert agent._origin is frames._origin
+
+
+def test_a_form_run_returns_the_frame_chat_mode_would_have_returned(schemas):
+    """
+    The claim the mode rests on: everything downstream is unchanged. So the
+    route's JSON must equal, field for field, what the streaming path emits for
+    the same outcome -- only the call id differs.
+    """
+    envelope = _call("top_books_by_rating", min_ratings=0)
+    outcome = ToolOutcome(
+        tool="top_books_by_rating",
+        params={"min_ratings": 0},
+        kind="param_error",
+        envelope=envelope,
+        message=envelope["error"],
+        caveats=list(envelope["caveats"]),
+    )
+    app = create_app()
+    app.state.bridge = _StubBridge(schemas, outcome=outcome)
+    with TestClient(app) as c:
+        got = c.post(
+            "/api/run",
+            json={"tool": "top_books_by_rating", "params": {"min_ratings": 0}},
+            headers={"x-chat-access": ACCESS},
+        ).json()
+
+    expected = frames._result_frame(got["id"], outcome)
+    assert got == json.loads(json.dumps(expected, default=str))
+    assert got["type"] == "tool_refusal"
+    assert "451,777" in got["message"]
+    # Attached, in the server's own order, exactly as the streaming path sends.
+    assert [c["id"] for c in got["caveats"]] == [
+        c["id"] for c in expected["caveats"]
+    ]
+    assert "unrated_books" in [c["id"] for c in got["caveats"]]
+
+
+def test_the_guard_probe_is_offered_in_tool_mode_and_still_labelled_bff(tool_client):
+    client, _ = tool_client
+    catalogue = client.get("/api/tools").json()["tools"]
+    probe = next(t for t in catalogue if t["name"] == guard_probe.TOOL_NAME)
+    assert probe["origin"] == "bff"
+    assert "demonstration probe" in probe["description"].lower()
+    assert probe["schema"]["properties"]["column"]["description"]
+
+
+def test_running_the_probe_from_a_form_reaches_the_real_guard(schemas):
+    """
+    The real bridge, with its discovery cache pre-seeded rather than fetched,
+    so the genuine `catalogue()` and `call()` run offline. The probe needs no
+    network: `bq.guard()` is a pure text check.
+    """
+    bridge = mcp_client.MCPBridge()
+    bridge._tools = [
+        {"name": name, "description": "", "input_schema": schema}
+        for name, schema in sorted(schemas.items())
+    ] + [guard_probe.anthropic_tool()]
+    app = create_app()
+    app.state.bridge = bridge
+    with TestClient(app) as c:
+        got = c.post(
+            "/api/run",
+            json={"tool": guard_probe.TOOL_NAME, "params": {"column": "publish_day"}},
+            headers={"x-chat-access": ACCESS},
+        ).json()
+    assert got["kind"] == "probe"
+    assert got["origin"] == "bff"
+    assert got["envelope"]["rule"] == "publish_day_banned"
+    assert got["envelope"]["executed"] is False
+
+
+# --- the form is generated, not written ------------------------------------
+
+
+def test_the_catalogue_hands_over_the_schemas_the_model_is_given(schemas, tool_client):
+    """
+    One fetch, one description. If the form were built from a second source it
+    could disagree with the model's tools about what a parameter accepts.
+    """
+    client, _ = tool_client
+    catalogue = {t["name"]: t["schema"] for t in client.get("/api/tools").json()["tools"]}
+    for name, schema in schemas.items():
+        assert catalogue[name] == schema
+
+
+def test_no_tool_parameter_name_is_written_into_the_client(schemas):
+    """
+    THE test for "don't hand-write forms". Every widget, label, bound and
+    default is read from the schema at runtime, so no parameter name may appear
+    in tools.js outside the preset values -- which are starting points for the
+    form, not the form itself.
+    """
+    # Comments are stripped first: the header explains the discipline by
+    # example ("min_ratings=0 ... reach the server unaltered"), which is prose
+    # about the rule, not an instance of breaking it.
+    body = _strip_comments(TOOLS_JS).split("const PRESETS = [", 1)
+    without_presets = body[0] + body[1].split("];", 1)[1]
+    names = {n for schema in schemas.values() for n in (schema.get("properties") or {})}
+    leaked = sorted(n for n in names if re.search(rf"\b{re.escape(n)}\b", without_presets))
+    assert not leaked, f"tools.js hard-codes tool parameters: {leaked}"
+
+
+def test_the_form_generator_covers_every_type_the_server_emits(schemas):
+    """
+    A parameter whose type the widget builder does not handle would silently
+    render as a text box with no bounds shown. Assert the set of types actually
+    emitted is the set the client dispatches on.
+    """
+    emitted = set()
+    for schema in schemas.values():
+        for spec in (schema.get("properties") or {}).values():
+            for branch in [spec, *(spec.get("anyOf") or [])]:
+                if isinstance(branch.get("type"), str):
+                    emitted.add(branch["type"])
+    assert emitted <= {"integer", "number", "string", "boolean", "null"}
+    for name in emitted - {"null"}:
+        assert f"'{name}'" in TOOLS_JS, f"tools.js does not handle type {name}"
+
+
+def test_the_form_generator_reads_every_constraint_keyword_the_server_emits(schemas):
+    """
+    `exclusiveMinimum` is the one that catches this: bucket_size carries it and
+    not `minimum`, so a reader that only knew `minimum` would print no lower
+    bound for the one parameter that has an unusual one.
+    """
+    emitted = set()
+    for schema in schemas.values():
+        for spec in (schema.get("properties") or {}).values():
+            emitted.update(spec.keys())
+            for branch in spec.get("anyOf") or []:
+                emitted.update(branch.keys())
+    for keyword in emitted - {"title", "type", "anyOf"}:
+        assert keyword in TOOLS_JS, f"tools.js ignores the schema keyword {keyword}"
+
+
+def test_every_tool_parameter_carries_a_description_for_the_form_to_show(schemas):
+    """
+    The form promises the server's own words for each parameter. A `Field`
+    added without a description would render a blank line, so fail here
+    instead.
+    """
+    missing = [
+        f"{tool}.{name}"
+        for tool, schema in schemas.items()
+        for name, spec in (schema.get("properties") or {}).items()
+        if not (spec.get("description") or "").strip()
+    ]
+    assert not missing, f"tool parameters with no description: {missing}"
+
+
+def test_every_preset_names_a_real_tool_and_real_parameters(schemas):
+    """
+    The presets are the only tool knowledge in the client, so they are the only
+    thing that can go stale. A preset naming a dropped parameter would be
+    silently ignored by the form.
+    """
+    block = TOOLS_JS.split("const PRESETS = [", 1)[1].split("];", 1)[0]
+    known = dict(schemas)
+    known[guard_probe.TOOL_NAME] = guard_probe.TOOL_SCHEMA
+    for entry in re.finditer(r"tool: '([a-z_]+)',\s*\n?\s*params: \{([^}]*)\}", block):
+        tool, params = entry.group(1), entry.group(2)
+        assert tool in known, f"preset names an unknown tool: {tool}"
+        properties = known[tool].get("properties") or {}
+        for key in re.findall(r"(\w+):", params):
+            assert key in properties, f"preset for {tool} sets unknown parameter {key}"
+
+
+# --- parameters reach the server as typed ----------------------------------
+
+
+def test_a_refused_value_is_passed_through_untouched(tool_client):
+    """
+    The mode's central discipline. `min_ratings=0` must arrive at the server as
+    0: substituting the default would replace the most instructive refusal in
+    the tool surface with a plausible-looking answer.
+    """
+    client, bridge = tool_client
+    client.post("/api/run", json={"tool": "top_books_by_rating", "params": {"min_ratings": 0}})
+    client.post("/api/run", json={"tool": "stats_by_author", "params": {"unit": "chapters"}})
+    assert bridge.calls == [
+        ("top_books_by_rating", {"min_ratings": 0}),
+        ("stats_by_author", {"unit": "chapters"}),
+    ]
+
+
+def test_an_omitted_parameter_is_not_sent_at_all(tool_client):
+    """
+    An empty field means "use the server's default", which is expressed by
+    sending nothing -- so the card's parameter row shows what was overridden
+    rather than a wall of values nobody chose.
+    """
+    client, bridge = tool_client
+    client.post("/api/run", json={"tool": "stats_by_year", "params": {}})
+    assert bridge.calls == [("stats_by_year", {})]
+
+
+def test_run_refuses_a_tool_it_does_not_know(tool_client):
+    client, bridge = tool_client
+    r = client.post("/api/run", json={"tool": "drop_tables", "params": {}})
+    assert r.status_code == 400 and r.json()["error"] == "no such tool"
+    assert bridge.calls == []
+
+
+def test_run_takes_scalars_only(tool_client):
+    """
+    Structural, not a judgement on any value: a form field is a scalar, so a
+    nested object is something this UI cannot have produced.
+    """
+    client, bridge = tool_client
+    for params in ({"a": {"nested": 1}}, {"a": [1, 2]}, "not-an-object"):
+        r = client.post("/api/run", json={"tool": "stats_by_year", "params": params})
+        assert r.status_code == 400, params
+    r = client.post(
+        "/api/run",
+        json={"tool": "stats_by_year", "params": {"language": "x" * (config.MAX_PARAM_CHARS + 1)}},
+    )
+    assert r.status_code == 400
+    assert bridge.calls == []
+
+
+def test_the_tool_routes_are_behind_the_access_token(schemas):
+    fresh = TestClient(create_app())
+    fresh.app.state.bridge = _StubBridge(schemas)
+    assert fresh.get("/api/tools").status_code == 401
+    assert fresh.post("/api/run", json={"tool": "stats_by_year"}).status_code == 401
+
+
+def test_tool_mode_has_its_own_spend_window(tool_client, monkeypatch):
+    """
+    A form submission bills BigQuery but no Anthropic tokens, and one call per
+    form is a tighter loop than one call per sentence -- so the two windows are
+    separate, and the tool one is still a window.
+    """
+    client, _ = tool_client
+    client.app.state.tool_limiter = RateLimiter(limit=2, window_s=600)
+    for _ in range(2):
+        assert client.post("/api/run", json={"tool": "stats_by_year", "params": {}}).status_code == 200
+    blocked = client.post("/api/run", json={"tool": "stats_by_year", "params": {}})
+    assert blocked.status_code == 429
+    assert "tool calls" in blocked.json()["error"]

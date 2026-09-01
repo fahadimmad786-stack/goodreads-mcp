@@ -1,18 +1,37 @@
-/* Thread controller: consumes the SSE frame stream and places each frame.
+/* The shell, and the chat mode's thread controller.
  *
- * The model's prose and the tool cards interleave in the order the server
- * emitted them, so a card sits where the model paused to fetch it. Prose is
- * kept as plain text until the turn's `contract` frame arrives, at which point
- * any numeral the checker could not source is marked in place.
+ * Two modes reach the same tools: a model choosing one from a question, and a
+ * person filling in its parameters (tools.js). They share the whole of the
+ * rendering — cards.js and charts.js — and differ only in what fetches the
+ * envelope. Which modes are on offer is the server's answer, not a build-time
+ * choice: `/api/health` reports whether an Anthropic key is configured, and
+ * the chat box is not offered at all when it is not.
+ *
+ * Chat mode itself: the model's prose and the tool cards interleave in the
+ * order the server emitted them, so a card sits where the model paused to
+ * fetch it. Prose is kept as plain text until the turn's `contract` frame
+ * arrives, at which point any numeral the checker could not source is marked
+ * in place.
  */
 
-import { renderToolCard, renderRefusalCard, escapeHtml } from './cards.js';
+import {
+  renderToolCard, renderRefusalCard, renderPendingCard, escapeHtml, node as el,
+} from './cards.js';
+import { initToolMode } from './tools.js';
 
 const thread = document.getElementById('thread');
+const chatPane = document.getElementById('pane-chat');
 const input = document.getElementById('input');
 const send = document.getElementById('send');
 const status = document.getElementById('status');
 const statusDot = document.getElementById('status-dot');
+const modeButtons = {
+  chat: document.getElementById('mode-chat'),
+  tools: document.getElementById('mode-tools'),
+};
+
+const MODE_KEY = 'gr_mode';
+let chatEnabled = true;
 
 const EXAMPLES = [
   { q: 'Which authors are the most read?' },
@@ -47,7 +66,7 @@ class Turn {
     this.proseBlocks = [];
     this.proseLen = 0;
     this.current = null;
-    thread.appendChild(this.root);
+    chatPane.appendChild(this.root);
     this.scroll();
   }
 
@@ -206,7 +225,7 @@ function place(turn, frame) {
       break;
     case 'thinking_delta': turn.thinking(frame.text); break;
     case 'text_delta': turn.text(frame.text); break;
-    case 'tool_call': turn.card(pending(frame)); break;
+    case 'tool_call': turn.card(renderPendingCard(frame)); break;
     case 'tool_result': replace(turn, frame, renderToolCard(frame)); break;
     case 'tool_refusal': replace(turn, frame, renderRefusalCard(frame)); break;
     case 'contract': turn.contract(frame); break;
@@ -214,30 +233,6 @@ function place(turn, frame) {
     case 'error': turn.error(frame.message); break;
     default: break;
   }
-}
-
-/* A placeholder card appears the moment a call starts, so the tool and its
- * parameters are visible while the query runs. */
-function pending(frame) {
-  const card = el('div', 'card');
-  card.dataset.call = frame.id;
-  const head = el('div', 'card-head');
-  const badge = el('span', `origin ${frame.origin}`, frame.origin);
-  head.appendChild(badge);
-  head.appendChild(el('span', 'tool-name', frame.tool));
-  head.appendChild(el('span', 'timing', 'running…'));
-  card.appendChild(head);
-  const params = el('div', 'params', '');
-  Object.entries(frame.params || {}).forEach(([k, v], i) => {
-    if (i) params.appendChild(document.createTextNode(' · '));
-    params.appendChild(el('span', 'k', `${k}=`));
-    params.appendChild(document.createTextNode(String(v)));
-  });
-  if (!Object.keys(frame.params || {}).length) {
-    params.appendChild(el('span', 'none', 'called with no arguments (server defaults apply)'));
-  }
-  card.appendChild(params);
-  return card;
 }
 
 function replace(turn, frame, card) {
@@ -259,13 +254,6 @@ function finish() {
 
 /* --- chrome -------------------------------------------------------------- */
 
-function el(tag, cls, text) {
-  const n = document.createElement(tag);
-  if (cls) n.className = cls;
-  if (text !== undefined && text !== null) n.textContent = String(text);
-  return n;
-}
-
 function buildExamples() {
   const box = document.getElementById('examples');
   box.appendChild(el('span', 'lead', 'try'));
@@ -279,21 +267,61 @@ function buildExamples() {
   }
 }
 
+/* --- modes ---------------------------------------------------------------
+ *
+ * The mode is a property of the page, switched on the body, so the two panes
+ * and the two composers are pure CSS. Each keeps its own thread, so switching
+ * mode never discards what the other one has already fetched. */
+
+function setMode(mode) {
+  const target = mode === 'chat' && !chatEnabled ? 'tools' : mode;
+  document.body.dataset.mode = target;
+  for (const [name, button] of Object.entries(modeButtons)) {
+    button.setAttribute('aria-selected', String(name === target));
+  }
+  try { localStorage.setItem(MODE_KEY, target); } catch (err) { /* private mode */ }
+  if (target === 'tools') initToolMode();
+  else input.focus();
+}
+
+/* Chat is offered only when the server says a key is configured. The button is
+ * disabled rather than removed, so the reason is visible rather than absent. */
+function applyChatAvailability(enabled) {
+  chatEnabled = enabled;
+  modeButtons.chat.disabled = !enabled;
+  modeButtons.chat.title = enabled
+    ? 'a model chooses the tool and writes the prose'
+    : 'off: this deployment has no ANTHROPIC_API_KEY. The tool mode needs none.';
+  if (!enabled) modeButtons.chat.appendChild(el('span', 'off', 'no key'));
+}
+
 async function loadHealth() {
+  let health = null;
   try {
     const r = await fetch('/api/health');
-    const h = await r.json();
-    if (h.mcp === 'ok') {
+    health = await r.json();
+    if (health.mcp === 'ok') {
       statusDot.className = 'dot ok';
-      status.textContent = `mcp ok · ${h.tools} tools · ${h.model} · auth ${h.auth}`;
+      const model = health.chat_enabled ? health.model : 'no model';
+      status.textContent = `mcp ok · ${health.tools} tools · ${model} · auth ${health.auth}`;
     } else {
       statusDot.className = 'dot bad';
-      status.textContent = `mcp ${h.mcp || 'unknown'} · ${h.model || ''}`;
+      status.textContent = `mcp ${health.mcp || 'unknown'} · ${health.model || 'no model'}`;
     }
   } catch (err) {
     statusDot.className = 'dot bad';
     status.textContent = 'backend unreachable';
   }
+
+  /* `chat_enabled` is absent from the public health body, which is what an
+   * unauthorised caller gets; that body never reaches this code, because the
+   * page itself is behind the same token. Default to on if it is missing
+   * anyway — /api/chat says so plainly rather than failing obscurely. */
+  applyChatAvailability(!health || health.chat_enabled !== false);
+
+  let remembered = null;
+  try { remembered = localStorage.getItem(MODE_KEY); } catch (err) { /* private mode */ }
+  setMode(remembered === 'tools' || remembered === 'chat' ? remembered : 'chat');
 }
 
 input.addEventListener('keydown', (e) => {
@@ -312,6 +340,8 @@ send.addEventListener('click', () => {
   if (text) ask(text);
 });
 
+modeButtons.chat.addEventListener('click', () => setMode('chat'));
+modeButtons.tools.addEventListener('click', () => setMode('tools'));
+
 buildExamples();
 loadHealth();
-input.focus();

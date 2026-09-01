@@ -1,5 +1,15 @@
 """
-The HTTP surface: static assets, a health probe, and one streaming chat route.
+The HTTP surface: static assets, a health probe, and two ways to reach a tool.
+
+`/api/chat` streams a model turn; `/api/run` invokes one tool with parameters a
+person filled in, and `/api/tools` hands the client the schemas to build that
+form from. Chat needs an Anthropic key and is simply not offered without one;
+the tool routes need none, so the service starts and is fully useful with no
+model behind it at all.
+
+Both paths end in `MCPBridge.call()` and both return frames built by
+`frames.py`, so the card, the caveats, the n/unit/threshold block and the
+charts are identical whichever one fetched the envelope.
 
 This service is the only publicly reachable part of the system, so everything
 that limits spend lives here: a required shared secret, a per-IP window, a
@@ -28,8 +38,7 @@ from starlette.responses import (
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import config
-from .agent import Agent
+from . import config, frames
 from .mcp_client import MCPBridge
 from .session import RateLimiter, SessionStore
 
@@ -123,6 +132,21 @@ async def chat(request: Request) -> StreamingResponse | JSONResponse:
     if not _authorised(request):
         return JSONResponse({"error": "unauthorised"}, status_code=401)
 
+    # The client hides the chat box when /api/health says the mode is off, so
+    # reaching here means a stale page or a direct caller. Say which mode is
+    # available rather than 500ing inside the Anthropic SDK.
+    if not config.chat_enabled():
+        return JSONResponse(
+            {
+                "error": (
+                    "chat mode is off: this deployment has no ANTHROPIC_API_KEY. "
+                    "The tool mode needs no model — pick a tool and fill in its "
+                    "parameters instead."
+                )
+            },
+            status_code=503,
+        )
+
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001
@@ -164,9 +188,9 @@ async def chat(request: Request) -> StreamingResponse | JSONResponse:
             status_code=429,
         )
 
-    agent: Agent = request.app.state.agent
+    agent = request.app.state.agent
 
-    async def frames() -> AsyncIterator[bytes]:
+    async def stream() -> AsyncIterator[bytes]:
         yield _sse(
             {
                 "type": "session",
@@ -185,7 +209,7 @@ async def chat(request: Request) -> StreamingResponse | JSONResponse:
         yield b"event: done\ndata: {}\n\n"
 
     response = StreamingResponse(
-        frames(),
+        stream(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-store",
@@ -206,6 +230,109 @@ async def chat(request: Request) -> StreamingResponse | JSONResponse:
     return response
 
 
+async def tools(request: Request) -> JSONResponse:
+    """
+    The tool surface with its JSON Schemas, for the no-model mode's forms.
+
+    Exactly what the model is given, reshaped -- see `MCPBridge.catalogue()`.
+    The form is generated from it in the browser; nothing about any tool's
+    parameters is written down in this package or in the client.
+    """
+    if not _authorised(request):
+        return JSONResponse({"error": "unauthorised"}, status_code=401)
+    bridge: MCPBridge = request.app.state.bridge
+    try:
+        catalogue = await bridge.catalogue()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("tool discovery failed: %s", type(exc).__name__)
+        return JSONResponse(
+            {"error": f"could not reach the MCP server ({type(exc).__name__})"},
+            status_code=503,
+        )
+    return JSONResponse({"tools": catalogue, "chat_enabled": config.chat_enabled()})
+
+
+async def run(request: Request) -> JSONResponse:
+    """
+    One tool call with caller-supplied parameters, no model involved.
+
+    The parameters are passed **verbatim** to the server. That is the point of
+    this mode: a rejected argument is a result here, and substituting a safe
+    default would replace the server's own explanation with silence. So the
+    only checks made here are the ones that keep this route from being a
+    general-purpose proxy -- a known tool name, a flat object, scalar values --
+    never a check on whether a value is one the tool will like.
+    """
+    if not _authorised(request):
+        return JSONResponse({"error": "unauthorised"}, status_code=401)
+
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse({"error": "expected a JSON body"}, status_code=400)
+
+    bridge: MCPBridge = request.app.state.bridge
+    try:
+        known = {t["name"] for t in await bridge.catalogue()}
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(
+            {"error": f"could not reach the MCP server ({type(exc).__name__})"},
+            status_code=503,
+        )
+
+    name = body.get("tool")
+    if name not in known:
+        return JSONResponse({"error": "no such tool"}, status_code=400)
+
+    params = body.get("params") or {}
+    problem = _reject_params(params)
+    if problem:
+        return JSONResponse({"error": problem}, status_code=400)
+
+    allowed, retry_in = request.app.state.tool_limiter.check(_client_key(request))
+    if not allowed:
+        return JSONResponse(
+            {
+                "error": (
+                    f"rate limit: {config.TOOL_RATE_LIMIT_CALLS} tool calls per "
+                    f"{int(config.RATE_LIMIT_WINDOW_S / 60)} minutes. "
+                    f"Try again in {retry_in}s."
+                )
+            },
+            status_code=429,
+        )
+
+    outcome = await bridge.call(name, params)
+    return JSONResponse(
+        frames._result_frame(f"run_{secrets.token_hex(6)}", outcome), status_code=200
+    )
+
+
+def _reject_params(params: object) -> str | None:
+    """
+    Structural limits only: this is a form, so its values are scalars.
+
+    Nothing here judges a value. `min_ratings=0` and `unit="chapters"` both
+    pass through untouched, because the server's refusal is the thing worth
+    seeing.
+    """
+    if not isinstance(params, dict):
+        return "params must be an object"
+    if len(params) > 32:
+        return "too many parameters"
+    for key, value in params.items():
+        if not isinstance(key, str) or not key.replace("_", "").isalnum():
+            return "parameter names must be bare identifiers"
+        if isinstance(value, bool) or value is None or isinstance(value, (int, float)):
+            continue
+        if isinstance(value, str):
+            if len(value) > config.MAX_PARAM_CHARS:
+                return f"parameter {key} is longer than {config.MAX_PARAM_CHARS} characters"
+            continue
+        return f"parameter {key} must be a string, number, boolean or null"
+    return None
+
+
 def _sse(frame: dict) -> bytes:
     return f"data: {json.dumps(frame, default=str)}\n\n".encode()
 
@@ -222,8 +349,8 @@ def _locked_page() -> str:
         "<p>This console needs an access key. Open it with "
         "<code>?k=&lt;key&gt;</code> appended to the URL.</p>"
         "<p style='color:#6b6b70'>The key exists because the service pays for "
-        "every turn: Anthropic tokens for the model, and BigQuery bytes for each "
-        "tool call.</p>"
+        "what it serves: BigQuery bytes for every tool call, and Anthropic "
+        "tokens too when the chat mode is configured.</p>"
     )
 
 
@@ -246,8 +373,9 @@ def create_app() -> Starlette:
         rather than refuse to boot because the MCP server is briefly away.
         """
         log.info(
-            "goodreads-chat starting: model=%s mcp=%s auth=%s",
-            config.MODEL,
+            "goodreads-chat starting: mode=%s model=%s mcp=%s auth=%s",
+            "chat+tools" if config.chat_enabled() else "tools only (no ANTHROPIC_API_KEY)",
+            config.MODEL if config.chat_enabled() else "-",
             config.MCP_URL,
             bridge.auth_mode,
         )
@@ -264,14 +392,29 @@ def create_app() -> Starlette:
             Route("/", index, methods=["GET"]),
             Route("/api/health", health, methods=["GET"]),
             Route("/api/chat", chat, methods=["POST"]),
+            Route("/api/tools", tools, methods=["GET"]),
+            Route("/api/run", run, methods=["POST"]),
             Mount("/static", app=StaticFiles(directory=STATIC), name="static"),
         ],
     )
     app.state.bridge = bridge
-    app.state.agent = Agent(bridge)
+    # Built only when there is a key. Constructing an Anthropic client without
+    # one is the kind of latent failure this service is built to avoid, and it
+    # would also import the SDK into a deployment that has no use for it.
+    app.state.agent = _make_agent(bridge) if config.chat_enabled() else None
     app.state.sessions = SessionStore()
     app.state.limiter = RateLimiter()
+    app.state.tool_limiter = RateLimiter(
+        limit=config.TOOL_RATE_LIMIT_CALLS, window_s=config.RATE_LIMIT_WINDOW_S
+    )
     return app
+
+
+def _make_agent(bridge: MCPBridge):
+    """Imported here, not at module scope: no key, no Anthropic SDK import."""
+    from .agent import Agent
+
+    return Agent(bridge)
 
 
 def main() -> None:

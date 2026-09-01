@@ -27,6 +27,13 @@ gcloud auth application-default login          # BigQuery uses ADC
 .venv/bin/python -m goodreads_mcp --transport http --port 8080   # Cloud Run mode
 ./deploy.sh                                    # Cloud Run; see README for the min-instances knob
 
+# Web console (webchat/): a second service, public, in front of the private one
+.venv/bin/pip install -e '.[web]'
+./run-local.sh                                 # proxy.sh + console + the ?k= URL
+./deploy-chat.sh                               # Cloud Run; adds ONE run.invoker binding
+# ANTHROPIC_API_KEY is optional in both: without it the console runs tool mode
+# only (pick a tool, fill in a schema-generated form). CHAT_ACCESS_TOKEN is not.
+
 # Telemetry: one JSON line per tool call, at logs/telemetry.jsonl (gitignored)
 .venv/bin/goodreads-telemetry                  # summarise the log
 .venv/bin/goodreads-telemetry --json --tool stats_by_author
@@ -94,6 +101,11 @@ The organising idea: **the dataset's defects are handled structurally, not by do
   - **Schema-layer rejection** — anything with a `Field(ge=…)`/`le=…` bound: `min_ratings`, `min_books`, `limit`, and out-of-range `bucket_size`.
 
   Both layers are wanted; the body validator is not redundant, it is what protects a direct Python caller and what carries the explanation. The web console classifies the schema layer as its own refusal kind (`schema`) and re-attaches the server's reasoning from the caveat registry, because the validation error alone says "Input should be greater than or equal to 1" and not why the floor exists.
+
+- **The console has two modes and one rendering path.** Chat mode (a model chooses the tool) and tool mode (a person fills in a form) both end in `MCPBridge.call()` and both build their frame with `frames._result_frame` — the *same function object*, asserted by `test_both_modes_build_their_frames_with_the_same_function`. `frames.py` exists so tool mode can build a card without importing `agent.py`, which constructs an Anthropic client. Consequences before you edit `webchat/`:
+  - **The forms are generated, never written.** `webchat/static/tools.js` builds every widget from the tool's `inputSchema`, served by `/api/tools` — which is `MCPBridge.catalogue()`, the same cached `tools/list` output the model gets. `test_no_tool_parameter_name_is_written_into_the_client` fails if a parameter name appears in `tools.js` outside its `PRESETS` values, so adding a per-tool form is a test failure, not a style preference.
+  - **Tool mode passes values verbatim.** `min_ratings=0` and `unit="chapters"` reach the server unaltered; `min`/`max` are printed on the field rather than set as HTML attributes that would clamp them. The refusal is the interesting result. `/api/run` checks only that the tool name is known and the params are a flat object of scalars — never whether a value is one the tool will like.
+  - **`ANTHROPIC_API_KEY` is optional; `CHAT_ACCESS_TOKEN` is not.** `config.verify()` requires only the second. With no key the agent is never constructed, the chat button is disabled with the reason in its tooltip, and `/api/chat` answers 503 naming the mode that works.
 
 - **Several tests assert on source text** via `inspect.getsource(server)`. Renaming a helper or reformatting a `caveats.collect(...)` call can fail a test without changing behaviour. That is intentional — it is how "every tool reporting `pooled_rating` states the duplication caveat" is enforced — but expect it during refactors.
 - **FastMCP wraps tool functions.** To call one directly, use `getattr(tool, "fn", tool)`, as `tests/smoke_live.py` does.

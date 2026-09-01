@@ -111,6 +111,47 @@ body {
 .dot.ok   { background: var(--accent); }
 .dot.bad  { background: var(--flag); }
 
+/* --- mode toggle ---------------------------------------------------------
+   Two paths to the same tools. The toggle is chrome, not a data control, so it
+   carries the same hairline treatment as everything else. */
+
+.modes {
+  display: flex;
+  border: 1px solid var(--rule-2);
+  border-radius: 3px;
+  overflow: hidden;
+  align-self: center;
+}
+.modes button {
+  font: 11.5px/1 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  background: none;
+  border: 0;
+  border-left: 1px solid var(--rule-2);
+  padding: var(--s2) var(--s3);
+  cursor: pointer;
+}
+.modes button:first-child { border-left: 0; }
+.modes button[aria-selected="true"] { color: var(--surface); background: var(--accent); }
+.modes button:disabled { cursor: not-allowed; color: var(--ink-3); opacity: 0.65; }
+.modes button .off {
+  margin-left: var(--s2);
+  color: var(--flag);
+  letter-spacing: 0;
+  text-transform: none;
+}
+.modes button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* One pane and one composer at a time. Both are hidden until /api/health has
+   said which modes exist, so a keyless deployment never flashes a chat box. */
+.pane, #composer-chat, #composer-tools { display: none; }
+body[data-mode="chat"]  #pane-chat,
+body[data-mode="chat"]  #composer-chat,
+body[data-mode="tools"] #pane-tools,
+body[data-mode="tools"] #composer-tools { display: block; }
+
 /* --- thread -------------------------------------------------------------- */
 
 #thread {
@@ -476,6 +517,120 @@ button#send {
 button#send:disabled { background: var(--ink-3); border-color: var(--ink-3); cursor: default; }
 
 .footnote { margin-top: var(--s2); font: 11.5px var(--mono); color: var(--ink-3); }
+
+/* --- the generated parameter form ---------------------------------------
+   Every label, range and default here is the tool's own schema. The panel can
+   grow past the fold on a tool with many parameters, so it scrolls itself
+   rather than pushing the thread off screen. */
+
+#composer-tools { max-height: 58vh; overflow-y: auto; }
+
+.tool-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}
+.picker-label {
+  font: 11.5px var(--mono);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+select#tool-picker {
+  font: 13px/1 var(--mono);
+  color: var(--ink);
+  background: var(--ground);
+  border: 1px solid var(--rule-2);
+  border-radius: 3px;
+  padding: 0 var(--s2);
+  height: 2.4rem;
+  min-width: 16rem;
+}
+select#tool-picker:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+button#tool-run {
+  font: 13px/1 var(--mono);
+  color: var(--surface);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  padding: 0 var(--s4);
+  height: 2.4rem;
+  cursor: pointer;
+}
+button#tool-run:disabled { background: var(--ink-3); border-color: var(--ink-3); cursor: default; }
+
+button.ghost {
+  font: 13px/1 var(--mono);
+  color: var(--ink-2);
+  background: none;
+  border: 1px solid var(--rule-2);
+  border-radius: 3px;
+  padding: 0 var(--s3);
+  height: 2.4rem;
+  cursor: pointer;
+}
+button.ghost:hover { border-color: var(--accent); color: var(--accent-ink); }
+
+/* The tool's own docstring, verbatim. */
+.tool-describe {
+  margin-top: var(--s3);
+  max-width: var(--measure);
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.tool-describe .origin { margin-right: var(--s2); }
+.tool-describe .demo-note { font: 11.5px var(--mono); color: var(--flag); }
+.tool-describe p { margin: var(--s2) 0 0; white-space: pre-wrap; }
+
+.tool-fields {
+  margin-top: var(--s4);
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
+  gap: var(--s4) var(--s4);
+}
+.tool-fields .no-params {
+  font: 12.5px var(--mono);
+  color: var(--ink-3);
+  font-style: italic;
+}
+
+.field label {
+  display: block;
+  font: 12.5px/1.4 var(--mono);
+  color: var(--ink);
+  margin-bottom: var(--s1);
+}
+.field .pname { font-weight: 600; }
+.field .req {
+  margin-left: var(--s2);
+  font-size: 10.5px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--flag);
+}
+.field input, .field select {
+  width: 100%;
+  font: 13px/1 var(--mono);
+  color: var(--ink);
+  background: var(--ground);
+  border: 1px solid var(--rule-2);
+  border-radius: 3px;
+  padding: 0 var(--s2);
+  height: 2.2rem;
+}
+.field input:focus-visible, .field select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  border-color: var(--accent);
+}
+.field input::placeholder { color: var(--ink-3); }
+/* Schema facts: type, bounds, default. */
+.field .meta { margin-top: var(--s1); font: 11px/1.5 var(--mono); color: var(--ink-3); }
+/* The parameter's own description, as the server wrote it. */
+.field .pdesc { margin-top: var(--s1); font-size: 12px; line-height: 1.5; color: var(--ink-2); }
 .notice {
   max-width: 62rem; margin: 0 auto var(--s4);
   font: 12.5px var(--mono);
@@ -497,4 +652,8 @@ button#send:disabled { background: var(--ink-3); border-color: var(--ink-3); cur
   .composer { padding: var(--s3); }
   .grounds dl { grid-template-columns: 1fr; gap: 2px; }
   .grounds dt { margin-top: var(--s2); }
+  .masthead { gap: var(--s2); }
+  .modes { order: 3; margin-left: auto; }
+  #composer-tools { max-height: 62vh; }
+  .tool-fields { grid-template-columns: 1fr; }
 }

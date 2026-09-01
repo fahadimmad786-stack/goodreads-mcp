@@ -1,10 +1,14 @@
 """
 Configuration, entirely from the environment.
 
-Nothing here has a secret default. Two values are mandatory and the process
-refuses to start without them, because both failure modes are silent and
-expensive: no Anthropic key means every turn 500s, and no access token means
-an open endpoint billing someone's account.
+Nothing here has a secret default. Exactly one value is mandatory -- the access
+token -- because its failure mode is silent and expensive: an open endpoint
+billing someone's account.
+
+The Anthropic key is optional, and what it buys is a mode rather than the
+service. Without it the console starts, serves, and answers tool calls; the
+chat box is simply not offered, because the only thing the model does here is
+choose the tool and write the prose around a card this console draws itself.
 """
 
 from __future__ import annotations
@@ -51,8 +55,19 @@ MAX_SESSIONS = int(os.environ.get("CHAT_MAX_SESSIONS", "200"))
 SESSION_TTL_S = float(os.environ.get("CHAT_SESSION_TTL", "7200"))
 MAX_INPUT_CHARS = int(os.environ.get("CHAT_MAX_INPUT_CHARS", "1000"))
 
+# Tool mode has its own window. A form submission costs BigQuery bytes but no
+# Anthropic tokens, and one call per form is a far tighter loop than one call
+# per sentence, so sharing the chat window would make the mode unusable long
+# before it made it expensive. The MCP server's own 20 GiB per-query ceiling is
+# the backstop either way.
+TOOL_RATE_LIMIT_CALLS = int(os.environ.get("CHAT_TOOL_RATE_LIMIT_CALLS", "40"))
+# A form field is a scalar. Anything longer or deeper is not something this UI
+# can have produced, so it is refused before it reaches the MCP client.
+MAX_PARAM_CHARS = int(os.environ.get("CHAT_MAX_PARAM_CHARS", "200"))
+
 # --- secrets ---------------------------------------------------------------
 
+# Optional. Present -> chat mode is offered; absent -> tool mode only.
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY") or None
 
 # Required, with no override. An unauthenticated Cloud Run service is the only
@@ -69,20 +84,25 @@ SESSION_COOKIE = "gr_sid"
 COOKIE_SECURE = os.environ.get("CHAT_COOKIE_SECURE", "1") != "0"
 
 
+def chat_enabled() -> bool:
+    """
+    Whether the model-backed mode may be offered.
+
+    Read at call time, not captured at import, so a test can turn the mode off
+    with monkeypatch and see the same code path a keyless deployment takes.
+    """
+    return bool(ANTHROPIC_API_KEY)
+
+
 def verify() -> None:
     """Fail at startup rather than per request. Called from app factory."""
     missing = []
-    if not ANTHROPIC_API_KEY:
-        missing.append(
-            "ANTHROPIC_API_KEY -- the Anthropic API key. In production supply "
-            "it from Secret Manager (--set-secrets), never --set-env-vars."
-        )
     if not ACCESS_TOKEN:
         missing.append(
             "CHAT_ACCESS_TOKEN -- the shared secret that gates this service. "
             "Generate one with `openssl rand -hex 24`. Without it the endpoint "
             "would be open to anyone with the URL, billing the Anthropic "
-            "account on every turn."
+            "account on every turn and BigQuery on every tool call."
         )
     if missing:
         raise ConfigError(
@@ -100,11 +120,16 @@ def verify() -> None:
 def public_settings() -> dict:
     """Non-secret settings, safe to expose on /api/health."""
     return {
-        "model": MODEL,
+        # The client picks its default mode from this, and hides the chat box
+        # entirely when it is false -- there is no half-working chat box.
+        "chat_enabled": chat_enabled(),
+        "model": MODEL if chat_enabled() else None,
         "mcp_url": MCP_URL,
         "auth_mode": (
             "oidc" if MCP_AUDIENCE else "static-token" if MCP_TOKEN else "proxy"
         ),
         "max_tool_calls_per_turn": MAX_TOOL_CALLS_PER_TURN,
         "max_turns_per_session": MAX_TURNS_PER_SESSION,
+        "tool_rate_limit_calls": TOOL_RATE_LIMIT_CALLS,
+        "rate_limit_window_s": RATE_LIMIT_WINDOW_S,
     }

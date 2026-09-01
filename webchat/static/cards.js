@@ -12,6 +12,11 @@
  *  3. No prose is written here about what a number means. The card states the
  *     figure, its n, its unit, its threshold, its caveats and its cost; the
  *     model's text around the card does the interpreting.
+ *
+ * Both modes draw from here. A card knows nothing about whether a model chose
+ * the tool or a person filled in the form -- it is handed the same frame
+ * either way, which is what makes the two modes comparable rather than merely
+ * similar.
  */
 
 import { hbars, vbars, lineSeries, fmt, escapeHtml } from './charts.js';
@@ -46,6 +51,21 @@ export function renderToolCard(frame) {
   card.appendChild(qmetaRow(env.query_meta || {}, frame.mcp_ms));
 
   wireHighlighting(card);
+  return card;
+}
+
+/* The card that appears the moment a call starts, so the tool and its
+ * parameters are on screen while the query runs. Replaced in place by the
+ * result card, matched on `data-call`. */
+export function renderPendingCard(frame) {
+  const card = node('div', 'card');
+  card.dataset.call = frame.id;
+  const head = node('div', 'card-head');
+  head.appendChild(originBadge(frame.origin));
+  head.appendChild(node('span', 'tool-name', frame.tool));
+  head.appendChild(node('span', 'timing', 'running…'));
+  card.appendChild(head);
+  card.appendChild(paramsRow(frame.params));
   return card;
 }
 
@@ -529,4 +549,4 @@ function bytes(b) {
   return `${(b / 1024 ** i).toFixed(i ? 2 : 0)} ${units[i]}`;
 }
 
-export { escapeHtml };
+export { escapeHtml, node };

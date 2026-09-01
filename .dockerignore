@@ -26,6 +26,8 @@ application_default_credentials.json
 # the private service carries none of the public one's code or dependencies.
 tests/
 deploy-chat.sh
+run-local.sh
+cloudbuild-chat.yaml
 clean_goodreads.py
 deploy.sh
 Dockerfile

@@ -227,6 +227,31 @@ class MCPBridge:
             self._tools = defs
             return self._tools, self._instructions
 
+    async def catalogue(self, refresh: bool = False) -> list[dict]:
+        """
+        The tool surface, for the no-model mode's parameter forms.
+
+        Deliberately `describe()`'s own cached output, reshaped -- not a second
+        fetch and not a second description. The form the user fills in is
+        generated from the exact JSON Schema the model is given, so a `Field`
+        description edited in `server.py` moves both at once and neither can
+        drift from the other.
+
+        `origin` is the only thing added, and it is the same distinction the
+        cards draw: everything from `tools/list` is `mcp`, the guard probe is
+        `bff`.
+        """
+        tools, _ = await self.describe(refresh=refresh)
+        return [
+            {
+                "name": t["name"],
+                "description": t["description"],
+                "schema": t["input_schema"] or {"type": "object", "properties": {}},
+                "origin": "bff" if t["name"] == guard_probe.TOOL_NAME else "mcp",
+            }
+            for t in tools
+        ]
+
     @property
     def mcp_tool_names(self) -> set[str]:
         return {t["name"] for t in (self._tools or []) if t["name"] != guard_probe.TOOL_NAME}

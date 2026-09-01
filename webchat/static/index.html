@@ -13,6 +13,16 @@
     <h1>goodreads-stats</h1>
     <p>aggregate-only MCP server over BigQuery — every figure carries its n, its unit and its caveats</p>
   </div>
+
+  <!-- Which path fetches the envelope. The rendering below is the same either
+       way, which is the point of offering both. -->
+  <div class="modes" id="modes" role="tablist" aria-label="mode">
+    <button type="button" id="mode-chat" role="tab" aria-selected="false"
+            aria-controls="pane-chat">chat</button>
+    <button type="button" id="mode-tools" role="tab" aria-selected="false"
+            aria-controls="pane-tools">tools</button>
+  </div>
+
   <div class="masthead-status">
     <span class="dot" id="status-dot"></span>
     <span id="status">connecting…</span>
@@ -20,25 +30,45 @@
 </header>
 
 <main id="thread">
-  <section class="intro" id="intro">
-    <h2>Ask a statistical question about 1.85M Goodreads editions.</h2>
-    <p>
-      A model chooses the tool and writes the explanation. It does not write the
-      numbers: every figure below is rendered from the tool's own JSON, together
-      with the count it rests on, the unit one row counts, what the minimum-ratings
-      threshold excluded, and the caveats attached to the specific columns they
-      weaken.
-    </p>
-    <ul>
-      <li>The tool call is shown in full — name, parameters, bytes billed, cache hit or miss, and the BigQuery share of the wall time.</li>
-      <li>A refused call is a result, not an error. Asking for something the dataset cannot support tells you why it cannot.</li>
-      <li>A checker marks any numeral in the prose that does not appear in a tool result, so the interface's central claim is verifiable rather than asserted.</li>
-    </ul>
-  </section>
+  <div class="pane" id="pane-chat">
+    <section class="intro" id="intro">
+      <h2>Ask a statistical question about 1.85M Goodreads editions.</h2>
+      <p>
+        A model chooses the tool and writes the explanation. It does not write the
+        numbers: every figure below is rendered from the tool's own JSON, together
+        with the count it rests on, the unit one row counts, what the minimum-ratings
+        threshold excluded, and the caveats attached to the specific columns they
+        weaken.
+      </p>
+      <ul>
+        <li>The tool call is shown in full — name, parameters, bytes billed, cache hit or miss, and the BigQuery share of the wall time.</li>
+        <li>A refused call is a result, not an error. Asking for something the dataset cannot support tells you why it cannot.</li>
+        <li>A checker marks any numeral in the prose that does not appear in a tool result, so the interface's central claim is verifiable rather than asserted.</li>
+      </ul>
+    </section>
+  </div>
+
+  <div class="pane" id="pane-tools">
+    <section class="intro" id="intro-tools">
+      <h2>Call a tool directly. No model in this path.</h2>
+      <p>
+        Pick one of the server's tools and fill in its parameters. The result is
+        rendered by exactly the same code the chat mode uses — the same n, unit and
+        threshold block, the same caveats attached to the columns they weaken, the
+        same charts, the same refusal cards. Nothing here is interpreted, because
+        nothing here is generated.
+      </p>
+      <ul>
+        <li>The form is built from each tool's own JSON Schema, fetched over MCP. Every label, range and default below is the server's, not this console's.</li>
+        <li>A field left empty is not sent, so the card's parameter row shows exactly what you overrode. Defaults are printed beside each field.</li>
+        <li>Values are passed verbatim. A parameter the server refuses returns its refusal, with the reasoning behind the constraint — that is a result worth seeing, so nothing is corrected on the way in.</li>
+      </ul>
+    </section>
+  </div>
 </main>
 
 <footer class="composer">
-  <div class="composer-inner">
+  <div class="composer-inner" id="composer-chat">
     <div class="examples" id="examples"></div>
     <div class="row">
       <textarea id="input" rows="1" placeholder="Ask about the dataset…"
@@ -46,6 +76,21 @@
       <button id="send" type="button">ask</button>
     </div>
     <div class="footnote">enter sends · shift+enter for a new line</div>
+  </div>
+
+  <div class="composer-inner" id="composer-tools">
+    <div class="examples" id="tool-presets"></div>
+    <div class="tool-head">
+      <label class="picker-label" for="tool-picker">tool</label>
+      <select id="tool-picker" aria-label="tool"></select>
+      <button id="tool-run" type="button">run</button>
+      <button id="tool-reset" type="button" class="ghost">clear</button>
+    </div>
+    <div class="tool-describe" id="tool-describe"></div>
+    <div class="tool-fields" id="tool-fields"></div>
+    <div class="footnote">
+      generated from the tool's schema · empty fields fall back to the server's defaults · enter runs
+    </div>
   </div>
 </footer>
 

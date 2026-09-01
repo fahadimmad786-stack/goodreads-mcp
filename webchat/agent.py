@@ -20,8 +20,11 @@ from typing import Any, AsyncIterator
 
 from anthropic import AsyncAnthropic
 
-from . import attach, config, guard_probe, numcheck
-from .mcp_client import MCPBridge, ToolOutcome
+from . import config, guard_probe, numcheck
+# Both frame builders are shared with tool mode, which must never import
+# this module: it constructs an Anthropic client, and tool mode has no key.
+from .frames import _origin, _result_frame
+from .mcp_client import MCPBridge
 from .session import Session
 
 log = logging.getLogger("webchat.agent")
@@ -250,10 +253,6 @@ class Agent:
         }
 
 
-def _origin(tool_name: str) -> str:
-    return "bff" if tool_name == guard_probe.TOOL_NAME else "mcp"
-
-
 def _as_dict(value: Any) -> dict:
     """
     Tool inputs are parsed JSON, never string-matched.
@@ -270,38 +269,3 @@ def _as_dict(value: Any) -> dict:
         except json.JSONDecodeError:
             return {"value": value}
     return {}
-
-
-def _result_frame(call_id: str, outcome: ToolOutcome) -> dict:
-    """
-    Structure a tool outcome for rendering.
-
-    Caveats are replaced in place by their structured form -- id, source, text,
-    and the fields each one qualifies -- so the client has exactly one
-    representation to draw from and cannot fall back to prose.
-    """
-    if outcome.kind in ("ok", "probe"):
-        envelope = dict(outcome.envelope or {})
-        if outcome.kind == "ok":
-            envelope["caveats"] = attach.structure(list(envelope.get("caveats") or []))
-        return {
-            "type": "tool_result",
-            "id": call_id,
-            "tool": outcome.tool,
-            "origin": _origin(outcome.tool),
-            "params": outcome.params,
-            "kind": outcome.kind,
-            "envelope": envelope,
-            "mcp_ms": outcome.mcp_ms,
-        }
-    return {
-        "type": "tool_refusal",
-        "id": call_id,
-        "tool": outcome.tool,
-        "origin": _origin(outcome.tool),
-        "params": outcome.params,
-        "kind": outcome.kind,
-        "message": outcome.message,
-        "caveats": attach.structure(outcome.caveats),
-        "mcp_ms": outcome.mcp_ms,
-    }

@@ -40,7 +40,9 @@ REPO="${REPO:-goodreads}"
 IMAGE="${IMAGE:-${REGION}-docker.pkg.dev/${PROJECT}/${REPO}/${SERVICE}:latest}"
 
 # Secret Manager secret holding the Anthropic API key. Created by this script
-# from $ANTHROPIC_API_KEY on first run if it does not exist.
+# from $ANTHROPIC_API_KEY on first run if it does not exist -- and skipped
+# entirely if neither exists, which deploys the console in tool mode only: the
+# forms, the cards and the guard probe, with no model and no Anthropic account.
 KEY_SECRET="${KEY_SECRET:-anthropic-api-key}"
 # Secret Manager secret holding the console's shared access token. Generated on
 # first run if absent -- the console refuses to start without one.
@@ -56,6 +58,7 @@ CHAT_MAX_TOOL_CALLS="${CHAT_MAX_TOOL_CALLS:-6}"
 CHAT_MAX_TURNS="${CHAT_MAX_TURNS:-25}"
 CHAT_RATE_LIMIT_TURNS="${CHAT_RATE_LIMIT_TURNS:-10}"
 CHAT_RATE_LIMIT_WINDOW="${CHAT_RATE_LIMIT_WINDOW:-300}"
+CHAT_TOOL_RATE_LIMIT_CALLS="${CHAT_TOOL_RATE_LIMIT_CALLS:-40}"
 
 echo "project=${PROJECT} region=${REGION} service=${SERVICE}"
 echo "mcp service=${MCP_SERVICE}  max-instances=${MAX_INSTANCES}"
@@ -129,12 +132,18 @@ ensure_secret() {   # name, value
     --condition=None >/dev/null
 }
 
+# The key is optional, so a missing one is a mode choice rather than an error.
+# It is only mounted if the secret actually exists: --set-secrets naming an
+# absent secret fails the deploy, and mounting an empty one would leave the
+# console claiming a chat mode that 500s on every turn.
+CHAT_MODE="chat and tool modes"
+KEY_MOUNT="ANTHROPIC_API_KEY=${KEY_SECRET}:latest,"
 if ! ensure_secret "${KEY_SECRET}" "${ANTHROPIC_API_KEY:-}"; then
-  echo >&2
-  echo "supply it once, either way:" >&2
-  echo "  ANTHROPIC_API_KEY=sk-ant-... ./deploy-chat.sh" >&2
-  echo "  printf %s \"\$KEY\" | gcloud secrets create ${KEY_SECRET} --data-file=-" >&2
-  exit 1
+  CHAT_MODE="tool mode only"
+  KEY_MOUNT=""
+  echo "no ${KEY_SECRET} secret and no ANTHROPIC_API_KEY: deploying without the chat mode."
+  echo "the console still serves every tool; add the key later to turn chat on:"
+  echo "  ANTHROPIC_API_KEY=sk-ant-... ./deploy-chat.sh"
 fi
 
 # Generated rather than prompted: a console with no access token would be an
@@ -189,8 +198,8 @@ gcloud run deploy "${SERVICE}" \
   --session-affinity \
   --timeout 600 \
   --port 8080 \
-  --set-env-vars "GOODREADS_MCP_URL=${MCP_URL},GOODREADS_MCP_AUDIENCE=${MCP_AUDIENCE},CHAT_MAX_TOOL_CALLS=${CHAT_MAX_TOOL_CALLS},CHAT_MAX_TURNS=${CHAT_MAX_TURNS},CHAT_RATE_LIMIT_TURNS=${CHAT_RATE_LIMIT_TURNS},CHAT_RATE_LIMIT_WINDOW=${CHAT_RATE_LIMIT_WINDOW}" \
-  --set-secrets "ANTHROPIC_API_KEY=${KEY_SECRET}:latest,CHAT_ACCESS_TOKEN=${ACCESS_SECRET}:latest"
+  --set-env-vars "GOODREADS_MCP_URL=${MCP_URL},GOODREADS_MCP_AUDIENCE=${MCP_AUDIENCE},CHAT_MAX_TOOL_CALLS=${CHAT_MAX_TOOL_CALLS},CHAT_MAX_TURNS=${CHAT_MAX_TURNS},CHAT_RATE_LIMIT_TURNS=${CHAT_RATE_LIMIT_TURNS},CHAT_RATE_LIMIT_WINDOW=${CHAT_RATE_LIMIT_WINDOW},CHAT_TOOL_RATE_LIMIT_CALLS=${CHAT_TOOL_RATE_LIMIT_CALLS}" \
+  --set-secrets "${KEY_MOUNT}CHAT_ACCESS_TOKEN=${ACCESS_SECRET}:latest"
 
 # ---------------------------------------------------------------------------
 # The one new binding on the private service.
@@ -211,6 +220,7 @@ CHAT_URL="$(gcloud run services describe "${SERVICE}" \
 
 echo
 echo "deployed: ${CHAT_URL}"
+echo "  ${CHAT_MODE}"
 if [ -n "${GENERATED_ACCESS}" ]; then
   echo
   echo "the console needs its access key on first visit:"

@@ -443,20 +443,92 @@ test.
 
 ## The web console (`webchat/`)
 
-A browser chat interface for the same twelve tools, deployed as a **second**
-Cloud Run service, `goodreads-chat`. It exists to make the server's central
-property visible: figures arrive with their limits attached.
+A browser interface for the same twelve tools, deployed as a **second** Cloud
+Run service, `goodreads-chat`. It exists to make the server's central property
+visible: figures arrive with their limits attached.
+
+Two modes reach the tools, and the toggle in the masthead is the only
+difference between them:
+
+| | **chat** | **tools** |
+|---|---|---|
+| what picks the tool | a model, from a question | you, from a list |
+| what sets the parameters | the model | a form built from the tool's JSON Schema |
+| needs `ANTHROPIC_API_KEY` | yes | **no** |
+| prose around the card | the model's, numeral-checked | none |
+| the card, caveats, charts, refusals | identical | identical |
+
+The tool mode is the console with the model taken out. Everything downstream of
+the tool call is the same code — the same envelope rendering, the same caveats
+attached to the same fields, the same n/unit/threshold block, the same charts,
+the same refusal cards, the same guard probe under its `bff` badge.
 
 ```bash
-# local, against a proxy.sh tunnel already running on 127.0.0.1:8080
-export ANTHROPIC_API_KEY=sk-ant-...
-export CHAT_ACCESS_TOKEN="$(openssl rand -hex 24)"
-export CHAT_COOKIE_SECURE=0                 # plain-HTTP localhost only
 .venv/bin/pip install -e '.[web]'
-.venv/bin/goodreads-chat                    # http://127.0.0.1:8081/?k=$CHAT_ACCESS_TOKEN
-
-./deploy-chat.sh                             # Cloud Run; prints the ?k= URL
+./run-local.sh          # starts proxy.sh if needed, then the console; prints the URL
+./deploy-chat.sh        # Cloud Run; prints the ?k= URL
 ```
+
+`run-local.sh` is the whole local path in one command. It reads
+`ANTHROPIC_API_KEY` from a gitignored `.env` if there is one — creating the file
+with a comment when it is absent, and saying which modes the run will offer
+rather than refusing to start — generates a
+`CHAT_ACCESS_TOKEN` on first run and saves it back to `.env` so the `?k=` URL
+stays stable between runs, starts `proxy.sh` only if nothing is already serving
+the MCP endpoint, waits for both to answer their health checks, and prints the
+ready-to-click URL.
+
+Ctrl+C shuts down what it started, and only that. `proxy.sh` execs gcloud,
+which spawns `cloud-run-proxy` as a child, so the proxy is started with `setsid`
+and the whole process group is signalled — killing the script's own pid would
+leave the tunnel behind. A proxy that was already running when the script
+started is deliberately left up, because something else is using it.
+
+Neither script requires the key. `deploy-chat.sh` mounts the Anthropic secret
+only when it exists, because `--set-secrets` naming an absent secret fails the
+deploy and mounting an empty one would leave the console advertising a chat mode
+that 500s on every turn.
+
+Env overrides: `PORT` (default 8081), `MCP_PORT` (8080), `ENV_FILE`, `LOG_DIR`.
+`.env` is parsed rather than sourced — it holds secrets, and `.` would execute
+whatever is in it — so only `KEY=value` lines are read, and an already-exported
+value wins over the file.
+
+### The no-model mode, and why its forms are generated
+
+The form is built in the browser from each tool's `inputSchema`, served by
+`/api/tools` — which is `MCPBridge.catalogue()`, the *same cached `tools/list`
+output the model is given*, reshaped and nothing else. So the widget, its
+label, its bounds and its default all come from the server, and a `Field(...)`
+edited in `server.py` moves the form and the model's tool definition together.
+Hand-writing the forms would make the UI a hand-maintained copy of the tool
+surface, which is the documentation-instead-of-structure failure the whole
+project avoids. `test_no_tool_parameter_name_is_written_into_the_client` fails
+if any parameter name appears in `tools.js` outside its preset values.
+
+Two behaviours look like omissions and are not:
+
+* **An empty field is not sent.** The server's default applies, and the card's
+  parameter row then shows exactly what was overridden rather than a wall of
+  values nobody chose. Each field prints its default beside it and carries it as
+  the placeholder, so nothing is hidden.
+* **Values are passed verbatim.** `min_ratings=0` and `unit=chapters` reach the
+  server unaltered, and `min`/`max` are printed on the field rather than set as
+  HTML attributes that would clamp them. The refusal that comes back — with the
+  server's own explanation and the caveats behind the constraint — is the most
+  instructive thing this console can show, and validating in the browser would
+  replace it with silence. The route's only checks are the ones that keep it
+  from being a general-purpose proxy: a known tool name, a flat object, scalar
+  values.
+
+Both paths end in `MCPBridge.call()` and both build their frame with
+`frames._result_frame` — the same function object, asserted by a test, because
+two builders would drift. `frames.py` exists so the tool path can build a card
+without importing `agent.py`, which constructs an Anthropic client.
+
+`config.verify()` therefore requires only `CHAT_ACCESS_TOKEN`. Without a key the
+service starts, the chat button is disabled with the reason in its tooltip, and
+`/api/chat` answers 503 naming the mode that does work.
 
 ### Why a backend-for-frontend, and why an MCP client
 
@@ -489,7 +561,7 @@ service cannot be both. Everything else follows from that split:
 | ingress | `--no-allow-unauthenticated` | `--allow-unauthenticated` + shared token |
 | service account | `goodreads-mcp-run` | `goodreads-chat-run` |
 | BigQuery | `roles/bigquery.jobUser` | **none** |
-| secrets | none | one Anthropic key |
+| secrets | none | the access token, and an Anthropic key if chat is wanted |
 | image | root `Dockerfile` | `webchat/Dockerfile` |
 
 `deploy-chat.sh` adds exactly two IAM bindings: `roles/run.invoker` on
@@ -507,14 +579,16 @@ place this gets over-granted.
    (`CHAT_ACCESS_TOKEN`, from Secret Manager) presented as `?k=` on first visit,
    then held in an `HttpOnly` cookie. The token is required: the service refuses
    to start without one, with no override flag, because a public endpoint that
-   bills an Anthropic account on every turn is not an acceptable default.
+   bills BigQuery on every tool call — and an Anthropic account on every chat
+   turn — is not an acceptable default. It is the *only* required secret.
 2. **Console → MCP server.** An OIDC identity token minted from the metadata
    server for `audience = <the MCP service's base URL>`, cached until five
    minutes before it expires, sent as `Authorization: Bearer`. Google's edge
    validates the signature, the audience and `roles/run.invoker` before the
    request reaches the container.
-3. **Console → Anthropic.** `ANTHROPIC_API_KEY` from Secret Manager via
-   `--set-secrets`, never `--set-env-vars`, never in the image or the repo.
+3. **Console → Anthropic.** Only in chat mode. `ANTHROPIC_API_KEY` from Secret
+   Manager via `--set-secrets`, never `--set-env-vars`, never in the image or
+   the repo. Absent it, this leg does not exist and neither does the mode.
 
 Locally the default is the `proxy.sh` path: `GOODREADS_MCP_URL` points at
 `127.0.0.1:8080` and the console sends no credential of its own, because
@@ -527,10 +601,16 @@ error text is scrubbed of `Authorization` before it reaches a client.
 
 ### Spend ceilings
 
-The console is public-by-URL, so the abuse surface is the Anthropic bill rather
-than IAM: a required access token, ten turns per IP per five minutes,
-twenty-five turns per session, six tool calls per turn, `--max-instances 3`,
-and the server's existing 20 GiB `maximum_bytes_billed` per query.
+The console is public-by-URL, so the abuse surface is the bill rather than IAM:
+a required access token, ten chat turns per IP per five minutes, twenty-five
+turns per session, six tool calls per turn, `--max-instances 3`, and the
+server's existing 20 GiB `maximum_bytes_billed` per query.
+
+Tool mode has its own window — forty calls per IP per five minutes
+(`CHAT_TOOL_RATE_LIMIT_CALLS`). A form submission bills BigQuery bytes but no
+Anthropic tokens, and one call per form is a far tighter loop than one call per
+sentence, so sharing the chat window would have made the mode unusable long
+before it made it expensive.
 
 ### The rendering contract, and how it is enforced
 
@@ -618,7 +698,8 @@ PYTHONPATH=. .venv/bin/python tests/smoke_live.py   # 18 live calls + probe, nee
 ```
 
 `tests/test_guards.py` covers the dataset's rules; `tests/test_webchat.py`
-covers the console's three claims — that every caveat can be attached to the
-figure it qualifies, that no numeral in the model's prose escapes the checker,
-and that no credential can reach a client — plus the access control and the
-independence of the two packages in both directions.
+covers the console's claims — that every caveat can be attached to the figure it
+qualifies, that no numeral in the model's prose escapes the checker, that no
+credential can reach a client, and that the no-model mode is the same path and
+not a parallel one: the same frame builder, forms with no hard-coded parameter
+in them, and values that reach the server exactly as typed.
