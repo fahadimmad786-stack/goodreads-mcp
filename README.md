@@ -674,11 +674,44 @@ the console simpler.
 
 ### Design notes
 
-One accent (`#2a78d6` light, `#3987e5` dark — validated for lightness, chroma
-and 3:1 contrast against both surfaces) plus one reserved status ink for
-refusals and placeholder-inflated rows. Charts are hand-rolled inline SVG: no
-library, so every bar carries its own exact value and nothing is read off an
-axis. Two measures never share an axis — `stats_by_year` draws volume and rating
+**Typeface.** Everything is set in JetBrains Mono, subset to Latin plus the
+punctuation the UI uses and served from this origin — 39 KB for two weights,
+no external request, and the CSP's `font-src 'self'` would block a CDN anyway.
+One face for prose as well as data is the aesthetic commitment the console
+rests on: it is an instrument for reading figures, with tabular numerals, an
+unambiguous `0`/`O`, and parameter columns that line up because the characters
+are the same width. Setting the prose in the same face says the prose is part
+of the readout rather than wrapped around it.
+
+> JetBrains Mono, © 2020 The JetBrains Mono Project Authors, licensed under the
+> SIL Open Font License 1.1. The licence ships beside the subset files at
+> `webchat/static/fonts/OFL.txt`; upstream is
+> <https://github.com/JetBrains/JetBrainsMono>.
+
+**Palette.** One accent — cyan, `#0094a8` light and `#00a6bc` dark — plus one
+reserved status ink for refusals and placeholder-inflated rows. The cyan was
+chosen by measurement, not taste: it sits roughly opposite the reserved amber
+on the hue wheel, so the two meanings this interface assigns to colour cannot
+be confused. Their CVD separation is ΔE 18.9 (deutan) light and 19.0 (protan)
+dark, well clear of the ΔE 8 floor. The accent needs three tokens because a
+data mark, a text colour and a filled control answer to three different rules:
+the mark must sit inside the categorical lightness band at 3:1, the text needs
+4.5:1 and therefore cannot sit in that band, and the filled control needs 4.5:1
+under white. The dark status amber was re-stepped rather than merely lightened,
+because the light one falls outside the dark lightness band and that ink is
+drawn as a bar fill on flagged rows.
+
+**Motion.** One orchestrated moment: at load the shell settles in reading order
+— masthead, heading, paragraph, list, composer — with staggered delays and a
+`backwards` fill so nothing flashes before its turn. Deliberately scoped to the
+furniture that exists at load; tool cards are never animated, because a card
+arrives while its neighbour is being read and a figure that slides in under the
+cursor is an interface fighting its reader. `prefers-reduced-motion` collapses
+all of it, and a test asserts the reveal cannot reach a card, a figure or a
+table.
+
+**Charts** are hand-rolled inline SVG: no library, so every bar carries its own
+exact value and nothing is read off an axis. Two measures never share an axis — `stats_by_year` draws volume and rating
 as two stacked charts rather than one dual-axis chart. The masthead carries no
 dataset figures at all; every number about the data appears inside a tool card,
 from that tool's JSON.

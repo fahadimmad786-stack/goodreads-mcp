@@ -23,6 +23,34 @@
    the categorical-palette checks against both surfaces.
    ========================================================================== */
 
+/* --- typeface -------------------------------------------------------------
+   JetBrains Mono, subset to Latin plus the punctuation this UI actually uses
+   and served from this origin: 39 KB for two weights, and no external request
+   -- the CSP's `font-src 'self'` would block a CDN anyway. Licence and full
+   attribution sit beside the files in static/fonts/OFL.txt (SIL OFL 1.1).
+
+   One typeface for everything, which is the aesthetic decision this console
+   rests on. It is an instrument for reading figures: tabular numerals, an
+   unambiguous 0/O and 1/l, and a column of parameters that lines up because
+   the characters are the same width. Setting the prose in the same face as
+   the data says the prose is part of the readout rather than wrapped around
+   it. `font-display: swap` because a figure must never wait on a font. */
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/static/fonts/jetbrains-mono-regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/static/fonts/jetbrains-mono-semibold.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
 /* --- tokens ---------------------------------------------------------------
    Light is the base. The dark block redefines only what changes, so no colour
    is ever defined solely inside a media query. */
@@ -30,37 +58,47 @@
 :root {
   color-scheme: light;
 
-  /* Ink: primary, secondary, tertiary. */
-  --ink:        #17171a;
-  --ink-2:      #55555c;
-  /* Tertiary ink carries a great deal of 11–12px monospace metadata, so it is
-     held to the 4.5:1 body-text ratio rather than a looser "muted" ratio. */
-  --ink-3:      #6b6b74;
+  /* Ink: primary, secondary, tertiary. Cool neutrals, so the cyan sits in the
+     same family as the surfaces rather than against them. */
+  --ink:        #12171a;
+  --ink-2:      #48535a;
+  /* Tertiary ink carries a great deal of 11–12px metadata, so it is held to
+     the 4.5:1 body-text ratio rather than a looser "muted" ratio. */
+  --ink-3:      #5f6b73;
 
-  --ground:     #faf9f7;
-  --surface:    #fcfcfb;
-  --surface-2:  #f4f2ee;
+  --ground:     #f4f6f7;
+  --surface:    #fafbfb;
+  --surface-2:  #e8ecee;
 
   /* Hairlines. Decorative separators only -- never a control boundary. */
-  --rule:       #e4e1db;
-  --rule-2:     #cfccc4;
+  --rule:       #e0e5e8;
+  --rule-2:     #c8d0d4;
   /* Control boundaries: inputs, selects, buttons, chart axes. Held to 3:1 so
      the edge of an interactive thing is identifiable (WCAG 1.4.11). */
-  --edge:       #8b8780;
+  --edge:       #7d8991;
 
-  --accent:      #2a78d6;   /* data marks; validated against both surfaces */
-  --accent-ink:  #1f5da8;   /* the accent as text */
-  --accent-fill: #2569bd;   /* the accent as a filled control, under white */
+  /* Cyan, chosen by measurement rather than taste: it sits roughly opposite
+     the reserved amber on the hue wheel, so the two meanings this interface
+     assigns to colour can never be confused -- CVD separation between them is
+     ΔE 18.9 (deutan) light and 19.0 (protan) dark, well clear of the floor.
+     Three tokens because they answer to three different rules: the mark needs
+     3:1 and must sit inside the categorical lightness band, the text needs
+     4.5:1 and therefore cannot, and the filled control needs 4.5:1 under
+     white. */
+  --accent:      #0094a8;   /* data marks: in band, chroma above the floor */
+  --accent-ink:  #007684;   /* the accent as text */
+  --accent-fill: #007684;   /* the accent as a filled control, under white */
   --on-accent:   #ffffff;
-  --accent-soft: rgba(42, 120, 214, 0.10);
-  --focus:       #2a78d6;
+  --accent-soft: rgba(0, 148, 168, 0.10);
+  --focus:       #0094a8;
 
   /* Reserved status ink: refusals and flagged rows only. Never a data series. */
-  --flag:       #8c5f14;
-  --flag-soft:  rgba(140, 95, 20, 0.08);
+  --flag:       #8a5410;
+  --flag-soft:  rgba(138, 84, 16, 0.08);
 
-  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  /* One face, one stack. The fallbacks are metric-similar monospaces, so a
+     swap before the webfont lands does not reflow the parameter columns. */
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 
   /* Type scale. Six steps, and every rule below uses one of them. */
   --t-micro: 10.5px;   /* pills and uppercase badges */
@@ -99,27 +137,29 @@
   :root:not([data-theme="light"]) {
     color-scheme: dark;
 
-    --ink:        #f2f1ec;
-    --ink-2:      #c3c2b7;
-    --ink-3:      #8f8e85;
+    --ink:        #e9eff2;
+    --ink-2:      #b2bfc7;
+    --ink-3:      #8a979f;
 
-    --ground:     #141413;
-    --surface:    #1a1a19;
-    --surface-2:  #222220;
+    --ground:     #10161a;
+    --surface:    #161d22;
+    --surface-2:  #1e272d;
 
-    --rule:       #2e2e2b;
-    --rule-2:     #43423d;
-    --edge:       #726f68;
+    --rule:       #252f35;
+    --rule-2:     #3a464d;
+    --edge:       #68767e;
 
-    --accent:      #3987e5;
-    --accent-ink:  #7fb2f0;
-    --accent-fill: #3987e5;
-    --on-accent:   #141413;
-    --accent-soft: rgba(57, 135, 229, 0.14);
-    --focus:       #7fb2f0;
+    --accent:      #00a6bc;
+    --accent-ink:  #5ccbdd;
+    --accent-fill: #00a6bc;
+    --on-accent:   #0b1114;
+    --accent-soft: rgba(0, 166, 188, 0.16);
+    --focus:       #5ccbdd;
 
-    --flag:       #d3a24a;
-    --flag-soft:  rgba(211, 162, 74, 0.12);
+    /* Re-stepped, not merely lightened: the light amber is out of the dark
+       lightness band, and this ink is drawn as a bar fill on flagged rows. */
+    --flag:       #bd8622;
+    --flag-soft:  rgba(189, 134, 34, 0.14);
   }
 }
 
@@ -133,7 +173,7 @@ body {
   margin: 0;
   background: var(--ground);
   color: var(--ink);
-  font: var(--t-body)/var(--lh-prose) var(--sans);
+  font: var(--t-body)/var(--lh-prose) var(--mono);
   -webkit-font-smoothing: antialiased;
   display: flex;
   flex-direction: column;
@@ -152,6 +192,33 @@ body {
    card's rounded corners cannot crop it. */
 .card :focus-visible,
 .figure:focus-visible { outline-offset: -2px; }
+
+/* --- page load -----------------------------------------------------------
+   One orchestrated moment, and only one. The shell settles in reading order --
+   masthead, then the pane's heading, its paragraph and its list, then the
+   composer -- so the eye is walked to the input rather than presented with
+   everything at once.
+
+   Deliberately scoped to the furniture that exists at load. Tool cards are
+   never animated: a card arrives while its neighbour is being read, and a
+   figure that slides in under the cursor is an interface fighting its reader.
+   `backwards` fill keeps each element hidden through its own delay instead of
+   flashing first. The reduced-motion block below collapses all of it. */
+
+@keyframes settle {
+  from { opacity: 0; transform: translateY(6px); }
+}
+
+.masthead,
+.pane > .intro > *,
+.composer {
+  animation: settle 420ms cubic-bezier(0.2, 0.7, 0.3, 1) backwards;
+}
+.masthead              { animation-delay: 0ms; }
+.pane > .intro > h2    { animation-delay: 80ms; }
+.pane > .intro > p     { animation-delay: 140ms; }
+.pane > .intro > ul    { animation-delay: 200ms; }
+.composer              { animation-delay: 260ms; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
@@ -420,7 +487,7 @@ body[data-mode="tools"] #composer-tools { display: block; }
   word-break: break-word;
 }
 .params .k { color: var(--ink-3); }
-.params .none { color: var(--ink-3); font-style: italic; }
+.params .none { color: var(--ink-3); }
 
 /* The figure scrolls on its own rather than widening the page, which makes
    it a scrollable region and therefore keyboard-reachable. */
@@ -784,7 +851,7 @@ select#tool-picker:hover,
 
 textarea#input {
   flex: 1;
-  font: var(--t-body)/var(--lh-base) var(--sans);
+  font: var(--t-body)/var(--lh-base) var(--mono);
   padding: var(--s2) var(--s3);
   resize: none;
   min-height: 2.6rem;
@@ -887,7 +954,6 @@ select#tool-picker { min-width: 16rem; }
 .tool-fields .no-params {
   font: var(--t-sm) var(--mono);
   color: var(--ink-3);
-  font-style: italic;
 }
 
 .field label {

@@ -33,10 +33,10 @@ _HEAD = """<!doctype html>
 <title>{title}</title>
 <meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
 <meta name="referrer" content="no-referrer">
-<meta name="theme-color" content="#fcfcfb" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#1a1a19" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#fafbfb" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#161d22" media="(prefers-color-scheme: dark)">
 <meta name="color-scheme" content="light dark">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='5' y='16' width='5' height='9' rx='1.5' fill='%232a78d6'/%3E%3Crect x='13.5' y='10' width='5' height='15' rx='1.5' fill='%232a78d6'/%3E%3Crect x='22' y='5' width='5' height='20' rx='1.5' fill='%232a78d6'/%3E%3Crect x='4' y='27' width='24' height='2' rx='1' fill='%238b8780'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='5' y='16' width='5' height='9' rx='1.5' fill='%230094a8'/%3E%3Crect x='13.5' y='10' width='5' height='15' rx='1.5' fill='%230094a8'/%3E%3Crect x='22' y='5' width='5' height='20' rx='1.5' fill='%230094a8'/%3E%3Crect x='4' y='27' width='24' height='2' rx='1' fill='%237d8991'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>

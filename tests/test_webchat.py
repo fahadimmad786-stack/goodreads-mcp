@@ -1330,3 +1330,98 @@ def test_no_shadow_gradient_or_second_accent_creeps_in():
     assert not re.search(r"#[0-9a-fA-F]{3,8}\b", rules), \
         "a colour is used outside the token block"
     assert len(re.findall(r"#[0-9a-fA-F]{6}\b", declarations)) > 20
+
+
+# --- the self-hosted typeface ---------------------------------------------
+#
+# The console sets everything in one face, served from this origin. The rules
+# worth pinning are the ones whose failure is silent: a missing licence, a
+# font that never reaches the wheel, or a CDN creeping back in.
+
+
+FONTS = STATIC / "fonts"
+
+
+def test_the_typeface_is_self_hosted_and_subset_small():
+    faces = sorted(FONTS.glob("*.woff2"))
+    assert len(faces) == 2, "expected one regular and one semibold woff2"
+    for face in faces:
+        # Subset to Latin plus the punctuation the UI uses. A full NerdFont
+        # build is ~200x this; if one is dropped in unsubset, fail.
+        assert face.stat().st_size < 60_000, f"{face.name} is not subset"
+
+
+def test_the_font_licence_ships_with_the_font():
+    """
+    The OFL requires the licence to travel with the font. Copied verbatim from
+    the system package rather than retyped.
+    """
+    ofl = FONTS / "OFL.txt"
+    assert ofl.exists(), "no OFL.txt beside the fonts"
+    text = ofl.read_text(encoding="utf-8")
+    assert "SIL Open Font License" in text
+    assert "JetBrains Mono" in text
+
+
+def test_the_stylesheet_loads_the_font_from_this_origin_only():
+    assert "@font-face" in APP_CSS
+    for src in re.findall(r"src:\s*url\((.*?)\)", APP_CSS):
+        assert src.strip('"\'').startswith("/static/fonts/"), src
+    # A figure must never wait on a font; once per @font-face.
+    assert _css_without_comments(APP_CSS).count("font-display: swap") == 2
+
+
+def test_the_font_is_packaged_for_the_deployed_image():
+    """
+    `static/*` does not match a subdirectory, so this is exactly the kind of
+    bug that only shows up in the deployed console as a silent fallback to a
+    system monospace.
+    """
+    pyproject = (WEBCHAT.parent / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'webchat = ["static/*", "static/fonts/*"]' in pyproject
+
+
+def test_one_typeface_throughout():
+    """
+    The aesthetic commitment: the prose is set in the same face as the data,
+    so it reads as part of the readout. A reintroduced sans stack would undo
+    it silently.
+    """
+    declarations = _css_without_comments(APP_CSS)
+    assert "--sans" not in declarations
+    assert '--mono: "JetBrains Mono"' in declarations
+    # No synthetic obliques: no italic file is shipped, so nothing may ask for one.
+    assert "font-style: italic" not in declarations
+
+
+# --- the page-load moment --------------------------------------------------
+
+
+def test_the_load_animation_is_scoped_to_the_shell_not_the_results():
+    """
+    A card arrives while its neighbour is being read. Animating a figure under
+    the cursor is an interface fighting its reader, so the reveal covers the
+    furniture that exists at load and nothing else.
+    """
+    reveal = APP_CSS.split("@keyframes settle", 1)[1].split("@media", 1)[0]
+    for selector in (".card", ".figure", "table", ".caveat"):
+        assert selector not in reveal, f"the load reveal reaches {selector}"
+    assert ".masthead" in reveal and ".composer" in reveal
+    # Staggered, and hidden through the delay rather than flashing first.
+    assert reveal.count("animation-delay") >= 4
+    assert "backwards" in APP_CSS
+
+
+def test_the_accent_and_the_status_ink_stay_the_only_two_meanings():
+    """
+    Colour carries meaning exactly twice here. The two must be separable for a
+    colour-blind reader; measured with the palette validator, pinned here.
+    """
+    light = APP_CSS.split(":root {", 1)[1].split("\n}", 1)[0]
+    dark = APP_CSS.split("prefers-color-scheme: dark", 1)[1].split("\n  }", 1)[0]
+    for block in (light, dark):
+        assert "--accent:" in block and "--flag:" in block
+    # Three accent tokens, because a mark, a text and a filled control answer
+    # to three different contrast rules.
+    for token in ("--accent:", "--accent-ink:", "--accent-fill:", "--on-accent:"):
+        assert token in light, token

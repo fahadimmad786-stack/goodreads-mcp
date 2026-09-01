@@ -27,7 +27,10 @@ build-backend = "setuptools.build_meta"
 include = ["goodreads_mcp*", "webchat*"]
 
 [tool.setuptools.package-data]
-webchat = ["static/*"]
+# `static/*` does not match a subdirectory, so the self-hosted font would be
+# absent from the wheel and the deployed console would silently fall back to a
+# system monospace. Both patterns, explicitly.
+webchat = ["static/*", "static/fonts/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
