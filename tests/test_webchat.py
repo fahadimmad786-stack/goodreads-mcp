@@ -1699,3 +1699,43 @@ def test_the_telemetry_view_is_labelled_local_and_computes_no_rate_itself():
     app_src = (WEBCHAT / "app.py").read_text(encoding="utf-8")
     for call in ("telemetry_cli.load(", "telemetry_cli.summarise(", "telemetry_cli.pct(", "telemetry_cli.log_path("):
         assert call in app_src, call
+
+
+# --- the query inspector ---------------------------------------------------
+
+
+def test_every_result_card_offers_the_sql_behind_it_behind_a_disclosure():
+    """
+    query_meta.statements is the SQL with its bound parameters, one entry per
+    job. The card shows it closed, so the figure stays the thing on screen; a
+    server that predates the field produces no disclosure rather than an
+    empty one.
+    """
+    cards = (STATIC / "cards.js").read_text(encoding="utf-8")
+    body = _strip_comments(cards)
+    assert "qm.statements" in body
+    assert "node('details', 'query')" in body
+    assert "if (!statements.length) return null;" in body
+    # Both the SQL and the bound values are shown; the SQL in a pre, so its
+    # own line breaks -- which are structure here, not source wrapping -- hold.
+    assert "node('pre', 'sql', st.sql)" in body
+    assert "st.params" in body
+    # Reached from the success path only: a refusal has no statement to show.
+    success = body.split("export function renderToolCard(", 1)[1].split("\n}", 1)[0]
+    assert "queryDetails(" in success
+
+
+def test_a_frame_from_a_real_envelope_shape_carries_its_statements(schemas):
+    """End to end through the frame builder: statements survive into the card's input."""
+    from goodreads_mcp import queries
+
+    meta = queries.merge_meta(
+        {"bytes_billed": 3, "cache_hit": True, "bq_ms": 1.0,
+         "sql": "SELECT COUNT(*) AS n FROM books WHERE rating_dist_total >= @min_ratings",
+         "params": {"min_ratings": 100}},
+    )
+    envelope = queries.envelope([], n={"n_books": 0}, caveats=[], meta=meta)
+    outcome = ToolOutcome(tool="stats_by_author", params={}, kind="ok", envelope=envelope)
+    frame = frames._result_frame("c", outcome)
+    assert frame["envelope"]["query_meta"]["statements"][0]["params"] == {"min_ratings": 100}
+    assert "@min_ratings" in frame["envelope"]["query_meta"]["statements"][0]["sql"]

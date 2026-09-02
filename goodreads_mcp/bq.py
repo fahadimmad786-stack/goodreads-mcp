@@ -167,6 +167,13 @@ def run(sql: str, params: dict[str, Any] | None = None) -> tuple[list[dict], dic
         "cache_hit": job.cache_hit,
         "job_id": job.job_id,
         "bq_ms": bq_ms,
+        # The statement and its bound values, so a caller holding the envelope
+        # can see exactly what produced a figure. Every value is a named
+        # parameter, so this is the query as BigQuery received it; nothing
+        # here is interpolated text. Telemetry does not carry this -- it
+        # records the job id, never the SQL -- which is why it rides in meta.
+        "sql": sql.strip(),
+        "params": dict(params),
     }
     # Reported to the telemetry accumulator for the enclosing tool call; a
     # no-op when there is no instrumented call in progress.

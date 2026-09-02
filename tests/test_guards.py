@@ -847,7 +847,27 @@ def test_merge_meta_tolerates_missing_keys():
         "queries": 2,
         "cache_hits": 0,
         "bq_ms": 0.0,
+        "statements": [],
     }
+
+
+def test_merge_meta_carries_each_statement_with_its_bound_parameters():
+    """
+    The console's query inspector reads `statements`. One entry per job, in
+    job order, each the SQL text plus the values bound to its named
+    parameters -- so a figure can be checked against the query that produced
+    it without leaving the envelope.
+    """
+    merged = queries.merge_meta(
+        {"bytes_billed": 1, "sql": "SELECT 1 FROM t WHERE x = @x", "params": {"x": 5}},
+        {"bytes_billed": 1},                       # a meta with no sql adds no entry
+        {"bytes_billed": 1, "sql": "SELECT 2", "params": {}},
+    )
+    assert merged["queries"] == 3
+    assert merged["statements"] == [
+        {"sql": "SELECT 1 FROM t WHERE x = @x", "params": {"x": 5}},
+        {"sql": "SELECT 2", "params": {}},
+    ]
 
 
 def test_bq_run_supplies_every_key_merge_meta_reads():
@@ -857,7 +877,7 @@ def test_bq_run_supplies_every_key_merge_meta_reads():
     rather than silently zeroing the console's cache column.
     """
     src = inspect.getsource(bq.run)
-    for key in ("bytes_processed", "bytes_billed", "cache_hit", "bq_ms"):
+    for key in ("bytes_processed", "bytes_billed", "cache_hit", "bq_ms", "sql", "params"):
         assert f'"{key}"' in src, f"bq.run() no longer reports {key}"
 
 

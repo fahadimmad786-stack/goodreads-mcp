@@ -825,6 +825,20 @@ th.hl, td.hl { background: var(--accent-soft); }
 }
 .qmeta .hit { color: var(--accent-ink); }
 
+/* --- the query inspector -------------------------------------------------
+   The statements behind the figure, closed by default. Opened, each shows
+   its bound values and its SQL, in the mono, in the cost section's ink. */
+
+details.query { padding: var(--s2) var(--card-pad); background: var(--surface-2); }
+details.query .stmt { margin-top: var(--s2); }
+details.query .stmt-head {
+  font: var(--t-meta)/var(--lh-base) var(--mono);
+  color: var(--ink-2);
+  word-break: break-word;
+}
+details.query .stmt-head .k { color: var(--ink-3); }
+details.query pre.sql { margin-top: var(--s1); background: var(--surface); }
+
 /* --- refusal card --------------------------------------------------------
    A refusal is a result, so it gets the same anatomy as a successful card --
    head, parameters, body, caveats, cost -- in the reserved status ink. */

@@ -350,6 +350,11 @@ def merge_meta(*metas: dict) -> dict:
     BigQuery served it from cache. Reported per tool call, not per job --
     `cache_hits` counts how many of `queries` were cache hits, so 2/2 and 1/2
     are distinguishable rather than collapsing to a single boolean.
+
+    `statements` is the SQL behind the figure, one entry per job in the order
+    the jobs ran, each with the values bound to its named parameters. It is
+    what lets a reader check a number against the query that produced it
+    without leaving the envelope. A meta without `sql` contributes no entry.
     """
     out = {
         "bytes_processed": 0,
@@ -357,6 +362,7 @@ def merge_meta(*metas: dict) -> dict:
         "queries": 0,
         "cache_hits": 0,
         "bq_ms": 0.0,
+        "statements": [],
     }
     for m in metas:
         out["bytes_processed"] += m.get("bytes_processed") or 0
@@ -365,6 +371,8 @@ def merge_meta(*metas: dict) -> dict:
         if m.get("cache_hit"):
             out["cache_hits"] += 1
         out["bq_ms"] += m.get("bq_ms") or 0.0
+        if m.get("sql"):
+            out["statements"].append({"sql": m["sql"], "params": dict(m.get("params") or {})})
     out["bq_ms"] = round(out["bq_ms"], 2)
     return out
 

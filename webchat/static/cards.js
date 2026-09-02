@@ -81,6 +81,8 @@ export function renderToolCard(frame) {
   card.appendChild(groundsBlock(env, markers));
   if (caveats.length) card.appendChild(caveatBlock(caveats, markers));
   card.appendChild(qmetaRow(env.query_meta || {}, frame.mcp_ms));
+  const query = queryDetails(env.query_meta || {});
+  if (query) card.appendChild(query);
 
   wireHighlighting(card);
   return card;
@@ -226,6 +228,38 @@ function qmetaRow(qm, mcpMs) {
   if (qm.bq_ms) row.appendChild(node('span', '', `${ms(qm.bq_ms)} in bigquery`));
   row.appendChild(node('span', '', `${ms(mcpMs)} mcp round trip`));
   return row;
+}
+
+/* The query inspector: every statement behind the figure, with the values
+ * bound to its named parameters, behind a closed disclosure. `statements`
+ * is carried in query_meta by merge_meta(); a server built before it exists
+ * sends none, and then there is no disclosure rather than an empty one. */
+function queryDetails(qm) {
+  const statements = qm.statements || [];
+  if (!statements.length) return null;
+  const details = node('details', 'query');
+  details.appendChild(node('summary', '',
+    `query · ${statements.length} ${statements.length === 1 ? 'statement' : 'statements'}`));
+  statements.forEach((st, i) => {
+    const block = node('div', 'stmt');
+    const head = node('div', 'stmt-head');
+    head.appendChild(node('span', 'k', `statement ${i + 1}`));
+    const keys = Object.keys(st.params || {});
+    if (keys.length) {
+      head.appendChild(document.createTextNode(' · bound: '));
+      keys.forEach((k, j) => {
+        if (j) head.appendChild(document.createTextNode(', '));
+        head.appendChild(node('span', 'k', `@${k}=`));
+        head.appendChild(document.createTextNode(JSON.stringify(st.params[k])));
+      });
+    } else {
+      head.appendChild(document.createTextNode(' · no bound parameters'));
+    }
+    block.appendChild(head);
+    block.appendChild(node('pre', 'sql', st.sql));
+    details.appendChild(block);
+  });
+  return details;
 }
 
 /* --- n / unit / threshold ------------------------------------------------ */
