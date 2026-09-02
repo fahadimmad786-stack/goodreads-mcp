@@ -24,6 +24,7 @@ import { announce } from './live.js';
 import { initToolMode, PRESETS, runPreset } from './tools.js';
 import { initOverview } from './overview.js';
 import { initDefects } from './defects.js';
+import { initTelemetry } from './telemetry.js';
 import { catalogue } from './data.js';
 
 const main = document.getElementById('thread');
@@ -372,12 +373,6 @@ function onTabKey(event) {
   if (!next) return;
   event.preventDefault();
   setView(next, { focusTab: true });
-}
-
-/* Placeholder until the Telemetry module lands. */
-function initTelemetry() {
-  const box = document.getElementById('telemetry');
-  if (!box.childElementCount) box.appendChild(el('div', 'empty', 'the Telemetry view is not built yet'));
 }
 
 /* Chat is offered only when the server says a key is configured. The

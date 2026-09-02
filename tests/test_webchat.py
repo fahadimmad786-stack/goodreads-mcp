@@ -350,13 +350,18 @@ def test_the_mcp_server_never_imports_the_web_console():
 
 def test_this_package_imports_only_pure_parts_of_the_server():
     """
-    Two imports from goodreads_mcp, both credential-free: the caveat registry
-    and the query guard. Anything else would put server internals -- or a
-    BigQuery client -- inside the public-facing service.
+    Four imports from goodreads_mcp, all credential-free: the caveat registry,
+    the query guard, and the telemetry summariser with the module that names
+    its log path. Anything else would put server internals -- or a BigQuery
+    client -- inside the public-facing service. (`telemetry` reaches `bq`
+    only lazily, inside the decorator the console never applies.)
     """
     import pathlib
 
-    allowed = {"goodreads_mcp.caveats", "goodreads_mcp.bq", "goodreads_mcp"}
+    allowed = {
+        "goodreads_mcp.caveats", "goodreads_mcp.bq", "goodreads_mcp",
+        "goodreads_mcp.telemetry_cli", "goodreads_mcp.telemetry",
+    }
     root = pathlib.Path(__file__).resolve().parent.parent / "webchat"
     seen = set()
     for path in root.glob("*.py"):
@@ -1608,3 +1613,89 @@ def test_the_defects_view_renders_from_the_overview_envelope_only():
     assert "fetch(" not in body
     for arithmetic in (" / ", " * 100", "toFixed("):
         assert arithmetic not in body, f"defects.js computes a figure: {arithmetic!r}"
+
+
+# --- the Telemetry view ----------------------------------------------------
+
+
+TELEMETRY_JS = (STATIC / "telemetry.js").read_text(encoding="utf-8")
+
+
+def test_the_telemetry_route_reuses_the_summariser_rather_than_reimplementing_it(
+    tool_client, monkeypatch, tmp_path
+):
+    """
+    The route is `goodreads-telemetry --json` behind HTTP: the same load() and
+    summarise(). Write three lines the CLI would accept and assert the route
+    returns exactly what summarise() returns for them, plus the scope label.
+    """
+    from goodreads_mcp import telemetry_cli
+
+    log = tmp_path / "telemetry.jsonl"
+    lines = [
+        {"ts": "2026-09-01T00:00:00+00:00", "tool": "stats_by_author", "params": {"unit": "works"},
+         "outcome": "ok", "duration_ms": 120.0, "bytes_billed": 1024, "bytes_processed": 1024,
+         "cache_hit": False},
+        {"ts": "2026-09-01T00:00:01+00:00", "tool": "stats_by_author", "params": {},
+         "outcome": "ok", "duration_ms": 80.0, "bytes_billed": 0, "bytes_processed": 0,
+         "cache_hit": True},
+        {"ts": "2026-09-01T00:00:02+00:00", "tool": "top_books_by_rating",
+         "params": {"min_ratings": 0}, "outcome": "other_error", "duration_ms": 5.0,
+         "error_type": "ParamError"},
+    ]
+    log.write_text("\n".join(json.dumps(l) for l in lines) + "\nnot json\n", encoding="utf-8")
+    monkeypatch.setenv("GOODREADS_TELEMETRY_PATH", str(log))
+
+    client, _ = tool_client
+    body = client.get("/api/telemetry").json()
+    assert body["scope"] == "local-session"
+    assert body["exists"] is True
+    assert body["malformed"] == 1
+
+    rows, _ = telemetry_cli.load(log, None, None)
+    expected = telemetry_cli.summarise(rows)
+    for key, value in expected.items():
+        assert body[key] == value, key
+    assert body["calls"] == 3
+    assert body["per_tool"]["stats_by_author"]["calls"] == 2
+    # The share of calls per parameter value is the CLI's own pct().
+    assert body["params_pct"]["unit"]["'works'"] == telemetry_cli.pct(1, 3)
+
+
+def test_a_missing_telemetry_log_is_an_empty_state_not_an_error(tool_client, monkeypatch, tmp_path):
+    monkeypatch.setenv("GOODREADS_TELEMETRY_PATH", str(tmp_path / "absent.jsonl"))
+    client, _ = tool_client
+    r = client.get("/api/telemetry")
+    assert r.status_code == 200
+    body = r.json()
+    assert body == {
+        "scope": "local-session",
+        "path": str(tmp_path / "absent.jsonl"),
+        "exists": False,
+        "calls": 0,
+    }
+
+
+def test_the_telemetry_route_is_behind_the_access_token(anon):
+    assert anon.get("/api/telemetry").status_code == 401
+
+
+def test_the_telemetry_view_is_labelled_local_and_computes_no_rate_itself():
+    """
+    The scope label is on the view, and the client lays the summary out
+    without re-deriving any rate or percentile from raw lines -- it never
+    receives them.
+    """
+    body = _strip_comments(TELEMETRY_JS)
+    assert "local-session" in TELEMETRY_JS
+    assert "Cloud Logging" in TELEMETRY_JS
+    assert "/api/telemetry" in body
+    for key in ("error_rate", "p50_ms", "p95_ms", "bytes_billed", "cache_hit_rate",
+                "guard_rejections_by_rule", "guard_rejections_by_column", "params_pct"):
+        assert key in body, f"the view ignores {key}"
+    # An empty log is a stated absence.
+    assert "no local telemetry log" in TELEMETRY_JS
+    # The route is a thin wrapper: the app calls the CLI's functions by name.
+    app_src = (WEBCHAT / "app.py").read_text(encoding="utf-8")
+    for call in ("telemetry_cli.load(", "telemetry_cli.summarise(", "telemetry_cli.pct(", "telemetry_cli.log_path("):
+        assert call in app_src, call

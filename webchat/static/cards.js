@@ -612,4 +612,4 @@ function bytes(b) {
   return `${(b / 1024 ** i).toFixed(i ? 2 : 0)} ${units[i]}`;
 }
 
-export { escapeHtml, node };
+export { escapeHtml, node, ms, bytes };

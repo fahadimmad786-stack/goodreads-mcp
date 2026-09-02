@@ -3,7 +3,8 @@ The HTTP surface: static assets, a health probe, and two ways to reach a tool.
 
 `/api/chat` streams a model turn; `/api/run` invokes one tool with parameters a
 person filled in, and `/api/tools` hands the client the schemas to build that
-form from. `/robots.txt` and a response header ask every crawler to stay out:
+form from. `/api/telemetry` summarises the local telemetry log through the
+CLI's own functions. `/robots.txt` and a response header ask every crawler to stay out:
 the console is private, its URL carries an access key, and nothing here should
 ever appear in an index. Chat needs an Anthropic key and is simply not offered without one;
 the tool routes need none, so the service starts and is fully useful with no
@@ -41,6 +42,8 @@ from starlette.responses import (
 )
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
+
+from goodreads_mcp import telemetry_cli
 
 from . import config, frames, pages
 from .mcp_client import MCPBridge
@@ -255,6 +258,44 @@ async def tools(request: Request) -> JSONResponse:
             status_code=503,
         )
     return JSONResponse({"tools": catalogue, "chat_enabled": config.chat_enabled()})
+
+
+async def telemetry(request: Request) -> JSONResponse:
+    """
+    The local telemetry log, summarised by the summariser's own code.
+
+    `telemetry_cli.load()` and `summarise()` are the functions behind the
+    `goodreads-telemetry` command; this route calls them and adds nothing, so
+    the console and the CLI cannot disagree about a figure. The log it reads
+    is the one the server writes when it runs on this machine under stdio --
+    hence `scope: local-session`. A deployed server writes structured lines to
+    Cloud Logging instead, and there is deliberately no path from here to
+    those: the console holds no logging credential.
+
+    A missing log is an answer, not an error: `exists: false` with the path
+    that was looked for, so the view can say so.
+    """
+    if not _authorised(request):
+        return JSONResponse({"error": "unauthorised"}, status_code=401)
+    path = telemetry_cli.log_path()
+    base = {"scope": "local-session", "path": str(path)}
+    if str(path) == "-" or not path.exists():
+        return JSONResponse({**base, "exists": False, "calls": 0})
+    try:
+        rows, malformed = telemetry_cli.load(path, tool=None, since=None)
+    except (OSError, ValueError) as exc:
+        return JSONResponse(
+            {**base, "exists": True, "error": f"could not read the log ({type(exc).__name__})"},
+            status_code=500,
+        )
+    summary = telemetry_cli.summarise(rows)
+    # The CLI's render step derives each parameter value's share of calls with
+    # `pct()`; the same function, so the view's share is the CLI's share.
+    summary["params_pct"] = {
+        key: {value: telemetry_cli.pct(n, summary["calls"]) for value, n in counts.items()}
+        for key, counts in summary["params"].items()
+    }
+    return JSONResponse({**base, "exists": True, "malformed": malformed, **summary})
 
 
 async def run(request: Request) -> JSONResponse:
@@ -475,6 +516,7 @@ def create_app() -> Starlette:
             Route("/api/chat", chat, methods=["POST"]),
             Route("/api/tools", tools, methods=["GET"]),
             Route("/api/run", run, methods=["POST"]),
+            Route("/api/telemetry", telemetry, methods=["GET"]),
             Mount("/static", app=StaticFiles(directory=STATIC), name="static"),
         ],
     )
