@@ -926,7 +926,9 @@ button.ghost:hover { border-color: var(--accent); color: var(--accent-ink); }
 }
 select#tool-picker { min-width: 16rem; }
 
-/* The tool's own docstring, verbatim. */
+/* The tool's own docstring, one <p> per paragraph. The client joins the
+   source's hard-wrapped lines, so no pre-wrap here: the prose reflows to the
+   measure like any other paragraph. */
 .tool-describe {
   margin-top: var(--s3);
   max-width: var(--measure);
@@ -942,7 +944,6 @@ select#tool-picker { min-width: 16rem; }
 .tool-describe p {
   margin: 0;
   flex-basis: 100%;
-  white-space: pre-wrap;
 }
 
 .tool-fields {

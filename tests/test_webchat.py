@@ -632,6 +632,8 @@ import asyncio  # noqa: E402
 import json  # noqa: E402
 import pathlib  # noqa: E402
 import re  # noqa: E402
+import shutil  # noqa: E402
+import subprocess  # noqa: E402
 
 WEBCHAT = pathlib.Path(__file__).resolve().parent.parent / "webchat"
 TOOLS_JS = (WEBCHAT / "static" / "tools.js").read_text(encoding="utf-8")
@@ -1425,3 +1427,87 @@ def test_the_accent_and_the_status_ink_stay_the_only_two_meanings():
     # to three different contrast rules.
     for token in ("--accent:", "--accent-ink:", "--accent-fill:", "--on-accent:"):
         assert token in light, token
+
+
+# --- descriptions reflow; the source's line wrapping is not layout ----------
+
+
+def _paragraphs_of_via_node(text: str) -> list[str]:
+    """Run tools.js's `paragraphsOf` under node on one input."""
+    match = re.search(r"export function paragraphsOf\(text\) \{.*?\n\}\n", TOOLS_JS, re.S)
+    assert match, "tools.js no longer defines paragraphsOf"
+    script = (
+        match.group(0).replace("export function", "function")
+        + "\nprocess.stdout.write(JSON.stringify(paragraphsOf("
+        + json.dumps(text)
+        + ")));"
+    )
+    out = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True)
+    return json.loads(out.stdout)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_descriptions_join_wrapped_lines_and_keep_only_paragraph_breaks():
+    """
+    A docstring is hard-wrapped at ~80 columns. Rendered with pre-wrap, those
+    breaks landed mid-sentence in the tool card ("the join is on / normalised
+    title text"). The client joins lines within a paragraph and keeps a blank
+    line as the one break that means something.
+    """
+    text = (
+        "Shape, coverage and known defects.\n\n"
+        "Call this before answering anything substantive. It reports live row and\n"
+        "population counts for every column that has a coverage problem.\n"
+        "   \n"
+        "  Third paragraph,   oddly   spaced.  \n"
+    )
+    assert _paragraphs_of_via_node(text) == [
+        "Shape, coverage and known defects.",
+        "Call this before answering anything substantive. It reports live row and "
+        "population counts for every column that has a coverage problem.",
+        "Third paragraph, oddly spaced.",
+    ]
+    assert _paragraphs_of_via_node("") == []
+    assert _paragraphs_of_via_node(None) == []
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_every_real_description_reflows_without_a_mid_sentence_break():
+    """
+    Over the live tool surface: no rendered paragraph of any tool or parameter
+    description may still contain a newline, and none may be lost.
+    """
+    from fastmcp import Client
+
+    from goodreads_mcp.server import mcp
+
+    async def go():
+        async with Client(mcp) as c:
+            return [(t.description or "", t.inputSchema) for t in await c.list_tools()]
+
+    for description, schema in asyncio.run(go()) + [
+        (guard_probe.TOOL_DESCRIPTION, guard_probe.TOOL_SCHEMA)
+    ]:
+        texts = [description] + [
+            spec.get("description") or "" for spec in (schema.get("properties") or {}).values()
+        ]
+        for text in texts:
+            paras = _paragraphs_of_via_node(text)
+            assert all("\n" not in p for p in paras)
+            # Every word survives, in order: joining lines loses nothing.
+            assert " ".join(paras).split() == text.split()
+            # And a blank line in the source is the only thing that makes a paragraph.
+            assert len(paras) == len([p for p in re.split(r"\n[ \t]*\n", text) if p.strip()])
+
+
+def test_the_description_rendering_does_not_preserve_source_whitespace():
+    """
+    Both description paths go through `paragraphsOf`, and the stylesheet no
+    longer asks the browser to honour the docstring's line breaks.
+    """
+    body = _strip_comments(TOOLS_JS)
+    assert "paragraphsOf(tool.description)" in body
+    assert "paragraphsOf(field.description)" in body
+    assert not re.search(r"node\('p', '', tool\.description", body)
+    rule = re.search(r"\.tool-describe p \{[^}]*\}", APP_CSS)
+    assert rule and "pre-wrap" not in rule.group(0)

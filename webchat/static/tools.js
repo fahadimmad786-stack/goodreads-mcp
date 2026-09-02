@@ -117,8 +117,13 @@ function select(name, values) {
   if (tool.origin === 'bff') {
     describe.appendChild(node('span', 'demo-note', 'demonstration probe, not a data path'));
   }
-  /* The tool's own docstring, as the server wrote it. */
-  describe.appendChild(node('p', '', tool.description || ''));
+  /* The tool's own docstring, as the server wrote it -- minus the source
+   * wrapping. A docstring is hard-wrapped at ~80 columns; those breaks are
+   * a fact about the Python file, not about the prose, so lines are joined
+   * within a paragraph and only blank lines survive as paragraph breaks. */
+  for (const text of paragraphsOf(tool.description)) {
+    describe.appendChild(node('p', '', text));
+  }
 
   fields = readSchema(tool.schema);
   fieldsBox.replaceChildren();
@@ -128,6 +133,18 @@ function select(name, values) {
   for (const field of fields) {
     fieldsBox.appendChild(renderField(field, values && values[field.name]));
   }
+}
+
+/* Description text -> its paragraphs, each with its whitespace collapsed.
+ * Splits on blank lines (one or more, with any trailing spaces on the empty
+ * line), joins the hard-wrapped lines inside a paragraph with single spaces,
+ * and drops paragraphs that were only whitespace. Pure: no DOM, so it can be
+ * run outside the page. */
+export function paragraphsOf(text) {
+  return String(text || '')
+    .split(/\n[ \t]*\n/)
+    .map((para) => para.replace(/\s+/g, ' ').trim())
+    .filter((para) => para.length > 0);
 }
 
 /* JSON Schema -> the facts one form field needs. Nothing tool-specific: the
@@ -207,7 +224,9 @@ function renderField(field, prefill) {
 
   /* Everything on this line is read off the schema. */
   wrap.appendChild(node('div', 'meta', constraintText(field)));
-  if (field.description) wrap.appendChild(node('div', 'pdesc', field.description));
+  for (const text of paragraphsOf(field.description)) {
+    wrap.appendChild(node('div', 'pdesc', text));
+  }
   return wrap;
 }
 
