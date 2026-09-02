@@ -1,4 +1,5 @@
-/* No-model mode: pick a tool, fill in its parameters, get the same card.
+/* The Tools view: pick a tool from the rail, fill in its parameters, get the
+ * same card chat mode would have drawn.
  *
  * Every field on screen is generated from the tool's own JSON Schema, fetched
  * from `/api/tools`, which is `tools/list` reshaped and nothing else. There is
@@ -27,25 +28,28 @@
 
 import { renderToolCard, renderRefusalCard, renderPendingCard, node } from './cards.js';
 import { announce } from './live.js';
+import { catalogue as fetchCatalogue } from './data.js';
 
-const thread = document.getElementById('thread');
-const pane = document.getElementById('pane-tools');
-const picker = document.getElementById('tool-picker');
-const fieldsBox = document.getElementById('tool-fields');
+const main = document.getElementById('thread');
+const pane = document.getElementById('tool-thread');
+const list = document.getElementById('tool-list');
+const titleBox = document.getElementById('tool-title');
 const describe = document.getElementById('tool-describe');
+const fieldsBox = document.getElementById('tool-fields');
 const runButton = document.getElementById('tool-run');
 const resetButton = document.getElementById('tool-reset');
 const presetsBox = document.getElementById('tool-presets');
 
 let catalogue = [];
+let selected = null;      /* the current tool's name */
 let fields = [];          /* the current tool's fields, read from its schema */
-let loaded = false;
+let loading = null;       /* the in-flight initialisation, so callers can await it */
 let busy = false;
 
 /* Starting points, in parameter values only — never form structure. Two of
  * them exist to be refused: the schema floor on min_ratings, and the guard.
  * Each is dropped silently if its tool is not in the catalogue. */
-const PRESETS = [
+export const PRESETS = [
   { label: 'most-read authors, by works', tool: 'stats_by_author',
     params: { unit: 'works', order_by: 'n_ratings' } },
   { label: 'ratings by decade', tool: 'stats_by_year',
@@ -60,40 +64,38 @@ const PRESETS = [
 
 /* --- loading ------------------------------------------------------------- */
 
-export async function initToolMode() {
-  if (loaded) return;
-  loaded = true;
-  picker.disabled = true;
-  picker.setAttribute('aria-busy', 'true');
-  picker.replaceChildren(node('option', '', 'loading the tool list…'));
+export function initToolMode() {
+  if (!loading) loading = load();
+  return loading;
+}
+
+async function load() {
+  list.replaceChildren(node('div', 'empty', 'fetching the tool list…'));
   fieldsBox.replaceChildren(node('div', 'empty', 'fetching the tool schemas over MCP…'));
 
-  let payload;
   try {
-    const r = await fetch('/api/tools');
-    payload = await r.json();
-    if (!r.ok) throw new Error(payload.error || `request failed (${r.status})`);
+    catalogue = await fetchCatalogue();
   } catch (err) {
-    loaded = false;
-    picker.removeAttribute('aria-busy');
-    picker.replaceChildren(node('option', '', 'tool list unavailable'));
+    loading = null;
+    list.replaceChildren(node('div', 'empty', 'tool list unavailable'));
     fieldsBox.replaceChildren(node('div', 'empty',
       'no schemas, so no form — the tool list could not be fetched'));
     notice(err.message || 'could not reach the console backend');
     return;
   }
 
-  catalogue = payload.tools || [];
-  picker.disabled = false;
-  picker.removeAttribute('aria-busy');
-  picker.replaceChildren();
+  list.replaceChildren();
   for (const tool of catalogue) {
-    const option = node('option', '', tool.name);
-    option.value = tool.name;
-    picker.appendChild(option);
+    const button = node('button', '');
+    button.type = 'button';
+    button.setAttribute('role', 'listitem');
+    button.dataset.tool = tool.name;
+    button.appendChild(node('span', '', tool.name));
+    if (tool.origin === 'bff') button.appendChild(originBadge(tool.origin));
+    button.addEventListener('click', () => select(tool.name));
+    list.appendChild(button);
   }
   buildPresets();
-  picker.addEventListener('change', () => select(picker.value));
   select(catalogue[0] && catalogue[0].name);
 }
 
@@ -101,28 +103,44 @@ function toolNamed(name) {
   return catalogue.find((t) => t.name === name) || null;
 }
 
+function originBadge(origin) {
+  const badge = node('span', `origin ${origin}`, origin);
+  badge.title = origin === 'bff'
+    ? 'runs in this console, not on the MCP server'
+    : 'a tool of the goodreads-stats MCP server, called over MCP';
+  return badge;
+}
+
 /* --- the form ------------------------------------------------------------ */
 
 function select(name, values) {
   const tool = toolNamed(name);
   if (!tool) return;
-  picker.value = tool.name;
+  selected = tool.name;
+  for (const button of list.children) {
+    if (button.dataset) button.setAttribute('aria-current', String(button.dataset.tool === tool.name));
+  }
+
+  titleBox.replaceChildren();
+  titleBox.appendChild(originBadge(tool.origin));
+  titleBox.appendChild(node('span', 'tool-name', tool.name));
 
   describe.replaceChildren();
-  const badge = node('span', `origin ${tool.origin}`, tool.origin);
-  badge.title = tool.origin === 'bff'
-    ? 'runs in this console, not on the MCP server'
-    : 'a tool of the goodreads-stats MCP server, called over MCP';
-  describe.appendChild(badge);
   if (tool.origin === 'bff') {
     describe.appendChild(node('span', 'demo-note', 'demonstration probe, not a data path'));
   }
   /* The tool's own docstring, as the server wrote it -- minus the source
    * wrapping. A docstring is hard-wrapped at ~80 columns; those breaks are
    * a fact about the Python file, not about the prose, so lines are joined
-   * within a paragraph and only blank lines survive as paragraph breaks. */
-  for (const text of paragraphsOf(tool.description)) {
-    describe.appendChild(node('p', '', text));
+   * within a paragraph and only blank lines survive as paragraph breaks.
+   * The first paragraph is shown; the rest sit behind a disclosure. */
+  const [first, ...rest] = paragraphsOf(tool.description);
+  if (first) describe.appendChild(node('p', '', first));
+  if (rest.length) {
+    const more = node('details', 'more');
+    more.appendChild(node('summary', '', `more (${rest.length} ${rest.length === 1 ? 'paragraph' : 'paragraphs'})`));
+    for (const text of rest) more.appendChild(node('p', '', text));
+    describe.appendChild(more);
   }
 
   fields = readSchema(tool.schema);
@@ -321,7 +339,7 @@ function coerce(field, raw) {
 
 async function submit() {
   if (busy) return;
-  const tool = toolNamed(picker.value);
+  const tool = toolNamed(selected);
   if (!tool) return;
 
   busy = true;
@@ -329,8 +347,6 @@ async function submit() {
   runButton.setAttribute('aria-busy', 'true');
   runButton.textContent = 'running…';
   announce(`running ${tool.name}`);
-  const intro = document.getElementById('intro-tools');
-  if (intro) intro.remove();
 
   const params = collect();
   const id = `local_${Math.random().toString(36).slice(2, 10)}`;
@@ -384,7 +400,15 @@ function finish() {
   scroll();
 }
 
-function scroll() { thread.scrollTop = thread.scrollHeight; }
+function scroll() { main.scrollTop = main.scrollHeight; }
+
+/* Select the preset's tool, fill in its values, run. Used by the presets
+ * strip here and by the Overview's starting-point cards. */
+export function runPreset(preset) {
+  if (!toolNamed(preset.tool)) return;
+  select(preset.tool, preset.params);
+  submit();
+}
 
 /* --- chrome -------------------------------------------------------------- */
 
@@ -392,16 +416,15 @@ function buildPresets() {
   presetsBox.replaceChildren();
   const available = PRESETS.filter((p) => toolNamed(p.tool));
   if (!available.length) return;
-  presetsBox.appendChild(node('span', 'lead', 'try'));
+  presetsBox.appendChild(node('div', 'lead label', 'try'));
   for (const preset of available) {
     const button = node('button', '');
     button.type = 'button';
+    button.appendChild(node('span', 'kind', 'preset'));
     button.appendChild(document.createTextNode(preset.label));
-    if (preset.warn) button.appendChild(node('span', 'warn', ` ${preset.warn}`));
-    button.addEventListener('click', () => {
-      select(preset.tool, preset.params);
-      submit();
-    });
+    button.appendChild(node('span', 'tool', preset.tool));
+    if (preset.warn) button.appendChild(node('span', 'warn', preset.warn));
+    button.addEventListener('click', () => runPreset(preset));
     presetsBox.appendChild(button);
   }
 }
@@ -414,4 +437,4 @@ function notice(message) {
 }
 
 runButton.addEventListener('click', submit);
-resetButton.addEventListener('click', () => select(picker.value));
+resetButton.addEventListener('click', () => select(selected));

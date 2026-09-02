@@ -6,15 +6,19 @@
    accent, one reserved status ink, hairline rules, no gradients, no shadows,
    no fill that is not a data mark.
 
-   Three rules hold the whole sheet together:
+   Four rules hold the whole sheet together:
 
      1. Every size comes from the type scale or the space scale below. There
         are no one-off pixel values in the rules that follow -- a figure and
         the label under it are related by a step in a scale, not by taste.
-     2. Every card section shares one horizontal padding, so the tool name,
-        the parameters, the figure, the n block and the cost all start on the
-        same vertical line. That alignment is what makes a card scannable.
-     3. Colour carries meaning exactly twice: the accent for data marks and
+     2. Two faces, by job. Prose -- paragraphs, headings, labels, buttons --
+        is set in the sans. Data -- numerals, parameters, tool and column
+        names, SQL, metadata -- is set in the mono. A reader can tell what is
+        being said from what is being measured by the face alone.
+     3. Four levels of hierarchy, and every element sits on one: a heading in
+        primary ink; a value in primary ink, mono, semibold; a label in
+        tertiary ink, mono, uppercase, small; running text in secondary ink.
+     4. Colour carries meaning exactly twice: the accent for data marks and
         interaction, the flag ink for refusals and placeholder-inflated rows.
         Text always wears a text token, never a series colour.
 
@@ -23,19 +27,34 @@
    the categorical-palette checks against both surfaces.
    ========================================================================== */
 
-/* --- typeface -------------------------------------------------------------
-   JetBrains Mono, subset to Latin plus the punctuation this UI actually uses
-   and served from this origin: 39 KB for two weights, and no external request
-   -- the CSP's `font-src 'self'` would block a CDN anyway. Licence and full
-   attribution sit beside the files in static/fonts/OFL.txt (SIL OFL 1.1).
+/* --- typefaces ------------------------------------------------------------
+   Both served from this origin, both subset to Latin plus the punctuation
+   this UI uses: the CSP's `font-src 'self'` would block a CDN anyway.
 
-   One typeface for everything, which is the aesthetic decision this console
-   rests on. It is an instrument for reading figures: tabular numerals, an
-   unambiguous 0/O and 1/l, and a column of parameters that lines up because
-   the characters are the same width. Setting the prose in the same face as
-   the data says the prose is part of the readout rather than wrapped around
-   it. `font-display: swap` because a figure must never wait on a font. */
+   Noto Sans for prose. Its Medium cut is declared at 600 so the one weight
+   keyword this sheet uses ("semibold") resolves to a real file in both
+   faces and nothing is synthesised. Licence in static/fonts/NOTO-LICENSE.txt.
 
+   JetBrains Mono for data: tabular numerals, an unambiguous 0/O and 1/l,
+   and a column of parameters that lines up because the characters are the
+   same width. Licence in static/fonts/OFL.txt (SIL OFL 1.1).
+
+   `font-display: swap` because a figure must never wait on a font. */
+
+@font-face {
+  font-family: "Noto Sans";
+  src: url("/static/fonts/noto-sans-regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Noto Sans";
+  src: url("/static/fonts/noto-sans-medium.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
 @font-face {
   font-family: "JetBrains Mono";
   src: url("/static/fonts/jetbrains-mono-regular.woff2") format("woff2");
@@ -96,17 +115,19 @@
   --flag:       #8a5410;
   --flag-soft:  rgba(138, 84, 16, 0.08);
 
-  /* One face, one stack. The fallbacks are metric-similar monospaces, so a
-     swap before the webfont lands does not reflow the parameter columns. */
+  /* Two stacks. The fallbacks are metric-similar, so a swap before the
+     webfont lands does not reflow a paragraph or a parameter column. */
+  --sans: "Noto Sans", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 
-  /* Type scale. Six steps, and every rule below uses one of them. */
-  --t-micro: 10.5px;   /* pills and uppercase badges */
-  --t-meta:  11.5px;   /* monospace metadata, chart ticks */
-  --t-sm:    12.5px;   /* dense secondary text */
-  --t-base:  13px;     /* tables and form controls */
-  --t-body:  15px;     /* prose */
-  --t-lead:  19px;     /* the one heading per pane */
+  /* Type scale. Seven steps, and every rule below uses one of them. */
+  --t-micro:   10.5px;   /* pills and uppercase badges */
+  --t-meta:    11.5px;   /* monospace metadata, chart ticks */
+  --t-sm:      12.5px;   /* dense secondary text */
+  --t-base:    13px;     /* tables and form controls */
+  --t-body:    15px;     /* prose */
+  --t-lead:    19px;     /* one heading per view */
+  --t-display: 28px;     /* hero numerals */
 
   --lh-flat:  1;
   --lh-tight: 1.35;
@@ -129,7 +150,8 @@
   --code-pad: 1px 5px;
 
   --measure: 68ch;    /* the prose column */
-  --column:  62rem;   /* the thread's own width */
+  --column:  74rem;   /* a view's own width */
+  --rail:    15rem;   /* the navigation rail */
   --control: 2.4rem;  /* one height for every button, input and select */
 }
 
@@ -173,13 +195,23 @@ body {
   margin: 0;
   background: var(--ground);
   color: var(--ink);
-  font: var(--t-body)/var(--lh-prose) var(--mono);
+  font: var(--t-body)/var(--lh-prose) var(--sans);
   -webkit-font-smoothing: antialiased;
   display: flex;
   flex-direction: column;
 }
 
 ::selection { background: var(--accent-soft); }
+
+/* Data wears the mono. Listed once here rather than repeated per rule. */
+code, pre, kbd,
+.mono, .params, .qmeta, .meta, .timing, .role, .figure-label,
+.tool-name, .pname, .k, .applies, .contract, .masthead-status,
+.grounds dt, .grounds b, .caveat .mk, .tile .value, .tile .label,
+.tool-list button, .stat, .cell-num, .field input, .field select,
+.rail-head, .label, .chip {
+  font-family: var(--mono);
+}
 
 /* One focus treatment everywhere. Never removed, never signalled by colour
    alone, and offset outwards so it is not mistaken for a border. */
@@ -195,9 +227,9 @@ body {
 
 /* --- page load -----------------------------------------------------------
    One orchestrated moment, and only one. The shell settles in reading order --
-   masthead, then the pane's heading, its paragraph and its list, then the
-   composer -- so the eye is walked to the input rather than presented with
-   everything at once.
+   masthead, rail, then the view's heading, tiles and starting points, then
+   the composer -- so the eye is walked down the page rather than presented
+   with everything at once.
 
    Deliberately scoped to the furniture that exists at load. Tool cards are
    never animated: a card arrives while its neighbour is being read, and a
@@ -210,15 +242,20 @@ body {
 }
 
 .masthead,
-.pane > .intro > *,
+.rail,
+.lede > *,
+.tiles,
+.starts,
 .composer {
   animation: settle 420ms cubic-bezier(0.2, 0.7, 0.3, 1) backwards;
 }
-.masthead              { animation-delay: 0ms; }
-.pane > .intro > h2    { animation-delay: 80ms; }
-.pane > .intro > p     { animation-delay: 140ms; }
-.pane > .intro > ul    { animation-delay: 200ms; }
-.composer              { animation-delay: 260ms; }
+.masthead     { animation-delay: 0ms; }
+.rail         { animation-delay: 60ms; }
+.lede > h2    { animation-delay: 100ms; }
+.lede > p     { animation-delay: 150ms; }
+.tiles        { animation-delay: 200ms; }
+.starts       { animation-delay: 250ms; }
+.composer     { animation-delay: 300ms; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
@@ -252,14 +289,14 @@ body {
   border: 1px solid var(--edge);
   border-radius: var(--radius);
   padding: var(--s2) var(--s3);
-  font: var(--t-base)/var(--lh-flat) var(--mono);
+  font: var(--t-base)/var(--lh-flat) var(--sans);
   text-decoration: none;
 }
 .skip-link:focus { transform: none; }
 
 /* Shared pill: origin badge, verdict, caveat source, required marker. One
    shape and one size for every small uppercase label in the interface. */
-.origin, .verdict, .caveat .src, .field .req {
+.origin, .verdict, .caveat .src, .field .req, .pill {
   font: var(--t-micro)/var(--lh-flat) var(--mono);
   letter-spacing: 0.07em;
   text-transform: uppercase;
@@ -270,44 +307,55 @@ body {
   flex: none;
 }
 
-/* --- masthead ------------------------------------------------------------
-   Carries no dataset figures at all. Every number about the data arrives
-   inside a tool card, from that tool's own JSON. */
+/* The label level: tertiary ink, mono, uppercase, small. Section labels,
+   definition terms, table headers and tile captions all sit here. */
+.label, .rail-head, .grounds dt, .caveats h4, .figure-label, .role,
+.tile .label, thead th, .section-head {
+  font-family: var(--mono);
+  font-size: var(--t-meta);
+  line-height: var(--lh-tight);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  font-weight: 500;
+}
+
+/* --- masthead: one line ------------------------------------------------- */
 
 .masthead {
   border-bottom: 1px solid var(--rule);
   background: var(--surface);
-  padding: var(--s3) var(--s5);
+  padding: 0 var(--s5);
+  height: var(--control);
   display: flex;
   align-items: center;
-  gap: var(--s3) var(--s4);
-  flex-wrap: wrap;
+  gap: var(--s3);
+  flex: none;
 }
-
 .masthead h1 {
   margin: 0;
-  font-size: var(--t-body);
+  font-size: var(--t-base);
   font-weight: 600;
   letter-spacing: -0.005em;
-  line-height: var(--lh-tight);
+  line-height: var(--lh-flat);
 }
-
 .masthead p {
-  margin: var(--s0) 0 0;
+  margin: 0;
   color: var(--ink-3);
   font-size: var(--t-sm);
-  line-height: var(--lh-tight);
-  max-width: 54ch;
+  line-height: var(--lh-flat);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-
 .masthead-status {
   margin-left: auto;
-  font: var(--t-meta)/var(--lh-tight) var(--mono);
+  font: var(--t-meta)/var(--lh-flat) var(--mono);
   color: var(--ink-3);
   display: flex;
   align-items: center;
   gap: var(--s2);
-  text-align: right;
+  flex: none;
 }
 
 /* The dot repeats what the line beside it already says; state is never
@@ -321,78 +369,219 @@ body {
 .dot.ok  { background: var(--accent); }
 .dot.bad { background: var(--flag); }
 
-/* --- mode toggle ---------------------------------------------------------
-   Two paths to the same tools. A tablist: arrow keys move between the tabs,
-   and the selected one is filled rather than merely tinted. */
+/* --- frame: rail + main -------------------------------------------------- */
 
-.modes {
+.frame {
+  flex: 1;
+  min-height: 0;
   display: flex;
-  border: 1px solid var(--edge);
-  border-radius: var(--radius);
-  overflow: hidden;
 }
 
-.modes button {
-  font: var(--t-meta)/var(--lh-flat) var(--mono);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+.rail {
+  width: var(--rail);
+  flex: none;
+  border-right: 1px solid var(--rule);
+  background: var(--surface);
+  overflow-y: auto;
+  padding: var(--s4) 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s5);
+}
+
+/* The view tabs. A vertical tablist: arrow keys move, one tab stop, and the
+   selected view is marked by an accent bar as well as by weight. */
+.views { display: flex; flex-direction: column; }
+.views button {
+  font: var(--t-base)/var(--lh-flat) var(--sans);
   color: var(--ink-2);
+  text-align: left;
   background: none;
   border: 0;
-  border-left: 1px solid var(--edge);
-  padding: var(--s2) var(--s3);
+  border-left: 2px solid transparent;
+  padding: var(--s2) var(--s4);
   min-height: var(--control);
   cursor: pointer;
   transition: background-color 100ms, color 100ms;
 }
-.modes button:first-child { border-left: 0; }
-.modes button:hover:not(:disabled):not([aria-selected="true"]) {
+.views button:hover:not([aria-selected="true"]) {
   background: var(--accent-soft);
   color: var(--accent-ink);
 }
-.modes button[aria-selected="true"] {
-  color: var(--on-accent);
-  background: var(--accent-fill);
+.views button[aria-selected="true"] {
+  color: var(--ink);
+  font-weight: 600;
+  border-left-color: var(--accent);
 }
-.modes button:disabled { cursor: not-allowed; color: var(--ink-3); }
-.modes button .off {
-  margin-left: var(--s2);
-  color: var(--flag);
-  letter-spacing: 0;
-  text-transform: none;
-}
-.modes button:focus-visible { outline-offset: -3px; }
+.views button:focus-visible { outline-offset: -3px; }
 
-/* One pane and one composer at a time, both hidden until /api/health has
-   said which modes exist -- a keyless deployment never flashes a chat box. */
-.pane, #composer-chat, #composer-tools { display: none; }
-body[data-mode="chat"]  #pane-chat,
-body[data-mode="chat"]  #composer-chat,
-body[data-mode="tools"] #pane-tools,
-body[data-mode="tools"] #composer-tools { display: block; }
+.rail-head { padding: 0 var(--s4); margin: 0 0 var(--s2); }
+
+/* The tool list. Names are identifiers, so they are set in the mono. */
+.tool-list { display: flex; flex-direction: column; }
+.tool-list button {
+  font-size: var(--t-sm);
+  line-height: var(--lh-tight);
+  color: var(--ink-2);
+  text-align: left;
+  background: none;
+  border: 0;
+  border-left: 2px solid transparent;
+  padding: var(--s2) var(--s4);
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  word-break: break-all;
+}
+.tool-list button:hover:not([aria-current="true"]) {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.tool-list button[aria-current="true"] {
+  color: var(--ink);
+  font-weight: 600;
+  border-left-color: var(--accent);
+  background: var(--ground);
+}
+.tool-list button .origin { margin-left: auto; }
+.tool-list .empty { margin: 0 var(--s4); }
+
+main#thread {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  scroll-behavior: smooth;
+  display: flex;
+  flex-direction: column;
+}
+
+/* One view at a time, and none until the client has decided which. */
+.view { display: none; flex: 1; flex-direction: column; min-height: 100%; }
+body[data-view="overview"]  #view-overview,
+body[data-view="tools"]     #view-tools,
+body[data-view="defects"]   #view-defects,
+body[data-view="telemetry"] #view-telemetry { display: flex; }
+
+.view-body {
+  flex: 1;
+  width: 100%;
+  max-width: var(--column);
+  padding: var(--s6) var(--s6) var(--s7);
+}
+
+/* --- the lede: one heading and one paragraph per view -------------------- */
+
+.lede { max-width: var(--measure); margin-bottom: var(--s6); }
+.lede h2, .view h2.title {
+  font-size: var(--t-lead);
+  font-weight: 600;
+  color: var(--ink);
+  margin: 0 0 var(--s3);
+  letter-spacing: -0.01em;
+  line-height: var(--lh-tight);
+}
+.lede p { margin: 0; color: var(--ink-2); }
+
+/* A view section: a label, then content. */
+.section { margin-top: var(--s6); }
+.section-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s3);
+  margin: 0 0 var(--s3);
+  padding-bottom: var(--s2);
+  border-bottom: 1px solid var(--rule);
+}
+.section-head .note {
+  margin-left: auto;
+  text-transform: none;
+  letter-spacing: 0;
+  font-family: var(--sans);
+  font-size: var(--t-sm);
+  color: var(--ink-3);
+}
+
+/* --- stat tiles: hero numerals, always with their label and source ------- */
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr));
+  gap: var(--s3);
+}
+.tile {
+  border: 1px solid var(--rule-2);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: var(--s3) var(--s4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  min-width: 0;
+}
+.tile .value {
+  font-size: var(--t-display);
+  font-weight: 600;
+  line-height: var(--lh-flat);
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  overflow-wrap: anywhere;
+}
+.tile .value.flag { color: var(--flag); }
+.tile .label { margin-top: var(--s1); }
+.tile .of {
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+  line-height: var(--lh-base);
+}
+.tile .of b { font-family: var(--mono); font-weight: 600; color: var(--ink); }
+.tile.pending .value { color: var(--ink-3); }
+.tile.hero { border-color: var(--flag); }
+
+/* --- starting points: cards, not links ---------------------------------- */
+
+.starts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+  gap: var(--s3);
+  margin-top: var(--s6);
+}
+.starts.compact { margin-top: var(--s4); grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr)); }
+.starts .lead { grid-column: 1 / -1; }
+.starts button {
+  font: var(--t-base)/var(--lh-base) var(--sans);
+  color: var(--ink);
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--rule-2);
+  border-radius: var(--radius);
+  padding: var(--s3) var(--s4);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  transition: border-color 100ms;
+}
+.starts button:hover:not(:disabled) { border-color: var(--accent); }
+.starts button:disabled { color: var(--ink-3); cursor: default; }
+.starts button .kind {
+  font: var(--t-meta)/var(--lh-tight) var(--mono);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.starts button .warn {
+  font: var(--t-meta)/var(--lh-tight) var(--mono);
+  color: var(--flag);
+}
+.starts button .tool { font: var(--t-sm)/var(--lh-tight) var(--mono); color: var(--accent-ink); }
 
 /* --- thread -------------------------------------------------------------- */
 
-#thread {
-  flex: 1;
-  overflow-y: auto;
-  padding: var(--s6) var(--s5) var(--s7);
-  scroll-behavior: smooth;
-}
+.turn { margin: var(--s6) 0 0; }
 
-.turn {
-  max-width: var(--column);
-  margin: 0 auto var(--s6);
-}
-.turn:last-child { margin-bottom: 0; }
-
-.role {
-  font: var(--t-meta)/var(--lh-flat) var(--mono);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--ink-3);
-  margin-bottom: var(--s2);
-}
+.role { margin-bottom: var(--s2); }
 
 .user-text {
   max-width: var(--measure);
@@ -403,7 +592,7 @@ body[data-mode="tools"] #composer-tools { display: block; }
 
 .prose {
   max-width: var(--measure);
-  color: var(--ink-2);
+  color: var(--ink);
   white-space: pre-wrap;
 }
 .prose:not(:empty) { margin: var(--s4) 0; }
@@ -424,7 +613,7 @@ body[data-mode="tools"] #composer-tools { display: block; }
   border-left: 1px solid var(--rule-2);
   padding-left: var(--s3);
 }
-.reasoning summary {
+.reasoning summary, details.more summary, details.query summary {
   cursor: pointer;
   font: var(--t-meta)/var(--lh-tight) var(--mono);
   letter-spacing: 0.05em;
@@ -432,7 +621,7 @@ body[data-mode="tools"] #composer-tools { display: block; }
   color: var(--ink-3);
   padding: var(--s1) 0;
 }
-.reasoning summary:hover { color: var(--ink-2); }
+.reasoning summary:hover, details.more summary:hover, details.query summary:hover { color: var(--ink-2); }
 .reasoning .body { white-space: pre-wrap; margin-top: var(--s2); }
 
 /* --- tool card -----------------------------------------------------------
@@ -454,7 +643,7 @@ body[data-mode="tools"] #composer-tools { display: block; }
   align-items: center;
   gap: var(--s2);
   padding: var(--s3) var(--card-pad);
-  font: var(--t-sm)/var(--lh-tight) var(--mono);
+  font: var(--t-sm)/var(--lh-tight) var(--sans);
   flex-wrap: wrap;
 }
 
@@ -467,7 +656,7 @@ body[data-mode="tools"] #composer-tools { display: block; }
   color: var(--ink);
   font-size: var(--t-base);
 }
-.demo-note { color: var(--flag); font-size: var(--t-meta); }
+.demo-note { color: var(--flag); font-size: var(--t-meta); font-family: var(--mono); }
 .timing {
   margin-left: auto;
   color: var(--ink-3);
@@ -481,13 +670,14 @@ body[data-mode="tools"] #composer-tools { display: block; }
 
 .params {
   padding: var(--s2) var(--card-pad);
-  font: var(--t-sm)/var(--lh-base) var(--mono);
+  font-size: var(--t-sm);
+  line-height: var(--lh-base);
   color: var(--ink-2);
   background: var(--surface-2);
   word-break: break-word;
 }
 .params .k { color: var(--ink-3); }
-.params .none { color: var(--ink-3); }
+.params .none { color: var(--ink-3); font-family: var(--sans); }
 
 /* The figure scrolls on its own rather than widening the page, which makes
    it a scrollable region and therefore keyboard-reachable. */
@@ -496,17 +686,12 @@ body[data-mode="tools"] #composer-tools { display: block; }
   overflow-x: auto;
 }
 
-.figure-label {
-  font: var(--t-meta)/var(--lh-tight) var(--mono);
-  letter-spacing: 0.04em;
-  color: var(--ink-3);
-  margin-bottom: var(--s3);
-}
+.figure-label { margin-bottom: var(--s3); }
 .figure > * + .figure-label { margin-top: var(--s5); }
 
 /* Nothing came back: a stated absence, not a blank panel. */
 .empty {
-  font: var(--t-base)/var(--lh-base) var(--mono);
+  font: var(--t-base)/var(--lh-base) var(--sans);
   color: var(--ink-3);
   border: 1px dashed var(--rule-2);
   border-radius: var(--radius);
@@ -524,10 +709,6 @@ table {
 
 thead th {
   text-align: left;
-  font: var(--t-meta)/var(--lh-tight) var(--mono);
-  letter-spacing: 0.03em;
-  color: var(--ink-3);
-  font-weight: 500;
   padding: 0 var(--s3) var(--s2) 0;
   border-bottom: 1px solid var(--rule-2);
   white-space: nowrap;
@@ -541,12 +722,13 @@ tbody td {
 tbody tr:last-child td { border-bottom: 0; }
 tbody tr:hover td { background: var(--accent-soft); }
 
-td.num, th.num {
+td.num, th.num, .cell-num {
   text-align: right;
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
 }
 td.name { max-width: 26rem; }
+td.mono { font-family: var(--mono); }
 
 /* Placeholder-inflated rows: tinted and labelled, never tint alone. */
 tr.flagged td { background: var(--flag-soft); }
@@ -580,38 +762,25 @@ th.hl, td.hl { background: var(--accent-soft); }
   gap: var(--s2) var(--s3);
   align-items: baseline;
 }
-.grounds dt {
-  font: var(--t-meta)/var(--lh-base) var(--mono);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--ink-3);
-}
+.grounds dt { line-height: var(--lh-base); }
 .grounds dd {
   margin: 0;
   color: var(--ink-2);
   line-height: var(--lh-base);
 }
 .grounds dd b {
-  font-family: var(--mono);
   font-variant-numeric: tabular-nums;
   color: var(--ink);
   font-weight: 600;
 }
-.grounds .k { color: var(--ink-3); font-family: var(--mono); }
+.grounds .k { color: var(--ink-3); }
 
 /* --- caveats: attached, always open -------------------------------------
    A caveat sits in the same card as the figure it weakens, marked against
    the specific column, and never behind a disclosure triangle. */
 
 .caveats { padding: var(--s3) var(--card-pad); }
-.caveats h4 {
-  margin: 0 0 var(--s3);
-  font: var(--t-meta)/var(--lh-tight) var(--mono);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--ink-3);
-  font-weight: 500;
-}
+.caveats h4 { margin: 0 0 var(--s3); }
 .caveat {
   display: grid;
   grid-template-columns: 1.3rem 1fr;
@@ -624,7 +793,6 @@ th.hl, td.hl { background: var(--accent-soft); }
 .caveat:first-of-type { border-top: 0; }
 .caveat .mk {
   color: var(--accent-ink);
-  font-family: var(--mono);
   font-size: var(--t-meta);
 }
 .caveat .src {
@@ -637,7 +805,8 @@ th.hl, td.hl { background: var(--accent-soft); }
 .caveat .applies {
   display: block;
   margin-top: var(--s1);
-  font: var(--t-meta)/var(--lh-tight) var(--mono);
+  font-size: var(--t-meta);
+  line-height: var(--lh-tight);
   color: var(--ink-3);
 }
 .caveat.hl, .caveat:hover { background: var(--accent-soft); }
@@ -646,7 +815,8 @@ th.hl, td.hl { background: var(--accent-soft); }
 
 .qmeta {
   padding: var(--s2) var(--card-pad);
-  font: var(--t-meta)/var(--lh-base) var(--mono);
+  font-size: var(--t-meta);
+  line-height: var(--lh-base);
   color: var(--ink-3);
   background: var(--surface-2);
   display: flex;
@@ -673,9 +843,9 @@ th.hl, td.hl { background: var(--accent-soft); }
 }
 .refusal-body .guard-rule { margin-top: var(--s3); }
 .refusal-body .rule { font-family: var(--mono); color: var(--flag); }
-.refusal-body .sql {
+.refusal-body .sql, pre.sql {
   display: block;
-  margin-top: var(--s3);
+  margin: var(--s3) 0 0;
   font: var(--t-sm)/var(--lh-base) var(--mono);
   color: var(--ink-2);
   background: var(--surface-2);
@@ -737,7 +907,8 @@ th.hl, td.hl { background: var(--accent-soft); }
 .contract {
   max-width: var(--measure);
   margin-top: var(--s3);
-  font: var(--t-meta)/var(--lh-base) var(--mono);
+  font-size: var(--t-meta);
+  line-height: var(--lh-base);
   color: var(--ink-3);
   border-top: 1px solid var(--rule);
   padding-top: var(--s2);
@@ -749,9 +920,8 @@ th.hl, td.hl { background: var(--accent-soft); }
    backend. Distinct from a refusal, which is the server answering. */
 
 .notice {
-  max-width: var(--column);
-  margin: 0 auto var(--s4);
-  font: var(--t-sm)/var(--lh-base) var(--mono);
+  margin: var(--s4) 0;
+  font: var(--t-sm)/var(--lh-base) var(--sans);
   color: var(--flag);
   border: 1px solid var(--flag);
   border-radius: var(--radius);
@@ -759,81 +929,24 @@ th.hl, td.hl { background: var(--accent-soft); }
   background: var(--flag-soft);
 }
 
-/* --- intro: the empty state of each pane -------------------------------- */
-
-.intro {
-  max-width: var(--measure);
-  margin: 0 auto var(--s6);
-  color: var(--ink-2);
-}
-.intro h2 {
-  font-size: var(--t-lead);
-  font-weight: 600;
-  color: var(--ink);
-  margin: 0 0 var(--s3);
-  letter-spacing: -0.01em;
-  line-height: var(--lh-tight);
-}
-.intro p { margin: 0; }
-.intro ul { padding-left: 1.1rem; margin: var(--s3) 0 0; }
-.intro li { margin-bottom: var(--s2); }
-.intro li:last-child { margin-bottom: 0; }
-.intro code {
-  font: var(--t-sm) var(--mono);
-  background: var(--surface-2);
-  padding: var(--code-pad);
-  border-radius: var(--radius-pill);
-}
-
-/* --- composer ------------------------------------------------------------ */
+/* --- composer: the foot of the Overview ---------------------------------- */
 
 .composer {
+  position: sticky;
+  bottom: 0;
   border-top: 1px solid var(--rule);
   background: var(--surface);
-  padding: var(--s3) var(--s5) var(--s4);
+  padding: var(--s3) var(--s6) var(--s4);
+  width: 100%;
+  max-width: var(--column);
 }
-.composer-inner { max-width: var(--column); margin: 0 auto; }
-
-/* Starting points. Two of them exist to be refused, and say so. */
-.examples {
-  display: flex;
-  gap: var(--s2) var(--s3);
-  flex-wrap: wrap;
-  margin-bottom: var(--s3);
-  font-size: var(--t-base);
-  align-items: baseline;
-}
-.examples .lead {
-  font: var(--t-meta) var(--mono);
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--ink-3);
-}
-.examples button {
-  font: inherit;
-  font-size: var(--t-base);
-  color: var(--accent-ink);
-  background: none;
-  border: 0;
-  border-bottom: 1px solid var(--rule-2);
-  padding: var(--s0) 0;
-  cursor: pointer;
-  text-align: left;
-}
-.examples button:hover:not(:disabled) { border-bottom-color: var(--accent); }
-.examples button:disabled { color: var(--ink-3); cursor: default; }
-.examples button .warn {
-  color: var(--flag);
-  font-family: var(--mono);
-  font-size: var(--t-meta);
-}
+.composer[hidden] { display: none; }
 
 .row { display: flex; gap: var(--s2); align-items: flex-end; }
 
 /* One border treatment, one focus ring and one height for every input and
    select in the interface. */
 textarea#input,
-select#tool-picker,
 .field input,
 .field select {
   font: var(--t-base)/var(--lh-base) var(--mono);
@@ -845,13 +958,12 @@ select#tool-picker,
   height: var(--control);
 }
 textarea#input:hover,
-select#tool-picker:hover,
 .field input:hover,
 .field select:hover { border-color: var(--ink-3); }
 
 textarea#input {
   flex: 1;
-  font: var(--t-body)/var(--lh-base) var(--mono);
+  font: var(--t-body)/var(--lh-base) var(--sans);
   padding: var(--s2) var(--s3);
   resize: none;
   min-height: 2.6rem;
@@ -861,9 +973,10 @@ textarea#input {
 textarea#input::placeholder,
 .field input::placeholder { color: var(--ink-3); }
 
-/* Filled control: the one primary action per composer. */
+/* Filled control: the one primary action per view. */
 button#send, button#tool-run {
-  font: var(--t-base)/var(--lh-flat) var(--mono);
+  font: var(--t-base)/var(--lh-flat) var(--sans);
+  font-weight: 600;
   color: var(--on-accent);
   background: var(--accent-fill);
   border: 1px solid var(--accent-fill);
@@ -887,7 +1000,7 @@ button#send:disabled, button#tool-run:disabled {
 
 /* Outlined control: the secondary action. */
 button.ghost {
-  font: var(--t-base)/var(--lh-flat) var(--mono);
+  font: var(--t-base)/var(--lh-flat) var(--sans);
   color: var(--ink-2);
   background: none;
   border: 1px solid var(--edge);
@@ -901,59 +1014,55 @@ button.ghost:hover { border-color: var(--accent); color: var(--accent-ink); }
 
 .footnote {
   margin-top: var(--s2);
-  font: var(--t-meta)/var(--lh-base) var(--mono);
+  font-size: var(--t-sm);
+  line-height: var(--lh-base);
   color: var(--ink-3);
 }
 
-/* --- the generated parameter form ---------------------------------------
+/* --- the tool panel: name, one line of description, the generated form ---
    Every label, bound and default here is read from the tool's own JSON
-   Schema. The panel scrolls itself rather than pushing the thread off
-   screen, because a tool with nine parameters is taller than the fold. */
+   Schema. */
 
-#composer-tools { max-height: 58vh; overflow-y: auto; }
-
-.tool-head {
+.tool-panel {
+  border: 1px solid var(--rule-2);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: var(--s4) var(--s5) var(--s5);
+}
+.tool-title {
   display: flex;
   align-items: center;
   gap: var(--s2);
   flex-wrap: wrap;
 }
-.picker-label {
-  font: var(--t-meta) var(--mono);
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--ink-3);
-}
-select#tool-picker { min-width: 16rem; }
+.tool-title .tool-name { font-size: var(--t-lead); letter-spacing: -0.01em; }
 
-/* The tool's own docstring, one <p> per paragraph. The client joins the
-   source's hard-wrapped lines, so no pre-wrap here: the prose reflows to the
-   measure like any other paragraph. */
+/* The tool's own docstring: its first paragraph in the open, the rest behind
+   a disclosure. The client joins the source's hard-wrapped lines, so no
+   pre-wrap here: the prose reflows to the measure like any other paragraph. */
 .tool-describe {
-  margin-top: var(--s3);
+  margin-top: var(--s2);
   max-width: var(--measure);
   font-size: var(--t-base);
   line-height: var(--lh-base);
   color: var(--ink-2);
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--s2);
 }
-.tool-describe .demo-note { font: var(--t-meta) var(--mono); color: var(--flag); }
+.tool-describe .demo-note { display: block; margin-bottom: var(--s1); }
 .tool-describe p {
   margin: 0;
-  flex-basis: 100%;
 }
+.tool-describe p + p { margin-top: var(--s2); }
+details.more { margin-top: var(--s1); }
+details.more[open] summary { margin-bottom: var(--s1); }
 
 .tool-fields {
   margin-top: var(--s4);
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
-  gap: var(--s4);
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  gap: var(--s4) var(--s5);
 }
 .tool-fields .no-params {
-  font: var(--t-sm) var(--mono);
+  font-size: var(--t-sm);
   color: var(--ink-3);
 }
 
@@ -972,7 +1081,8 @@ select#tool-picker { min-width: 16rem; }
 /* Schema facts: type, bounds, default. */
 .field .meta {
   margin-top: var(--s1);
-  font: var(--t-meta)/var(--lh-base) var(--mono);
+  font-size: var(--t-meta);
+  line-height: var(--lh-base);
   color: var(--ink-3);
 }
 /* The parameter's own description, as the server wrote it. */
@@ -981,6 +1091,63 @@ select#tool-picker { min-width: 16rem; }
   font-size: var(--t-sm);
   line-height: var(--lh-base);
   color: var(--ink-2);
+}
+
+.tool-actions {
+  margin-top: var(--s4);
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}
+.tool-actions .footnote { margin: 0 0 0 var(--s2); }
+
+/* --- defects and telemetry furniture ------------------------------------ */
+
+/* A defect row: source pill and id, the live figures, the prose, the
+   affected columns. */
+.defect {
+  display: grid;
+  grid-template-columns: minmax(11rem, 14rem) 1fr;
+  gap: var(--s2) var(--s5);
+  padding: var(--s4) 0;
+  border-top: 1px solid var(--rule);
+}
+.defect:first-of-type { border-top: 0; }
+.defect .id {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  align-items: flex-start;
+}
+.defect .id .name { font: var(--t-sm)/var(--lh-tight) var(--mono); color: var(--ink); font-weight: 600; word-break: break-all; }
+.defect .src { color: var(--ink-3); border-color: var(--rule-2); }
+.defect .src.measured { color: var(--flag); border-color: currentColor; }
+.defect .figures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2) var(--s4);
+  margin-bottom: var(--s2);
+}
+.stat { font-size: var(--t-sm); color: var(--ink-3); line-height: var(--lh-base); }
+.stat b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.defect .text { margin: 0; max-width: var(--measure); color: var(--ink-2); font-size: var(--t-base); line-height: var(--lh-base); }
+.chips { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s2); margin-top: var(--s2); }
+.chip {
+  font-size: var(--t-meta);
+  line-height: var(--lh-flat);
+  color: var(--ink-2);
+  background: var(--surface-2);
+  border-radius: var(--radius-pill);
+  padding: var(--code-pad);
+}
+
+.panel {
+  border: 1px solid var(--rule-2);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: var(--s4) var(--s5);
+  overflow-x: auto;
 }
 
 /* --- standalone pages: locked, not found --------------------------------
@@ -1029,20 +1196,41 @@ select#tool-picker { min-width: 16rem; }
   color: var(--ink-3);
 }
 
-/* --- responsive ---------------------------------------------------------- */
+/* --- responsive ----------------------------------------------------------
+   Below tablet width the rail becomes a strip across the top: the view tabs
+   in a row, the tool list scrolling sideways beneath them. */
 
-@media (max-width: 720px) {
-  .masthead { padding: var(--s3) var(--s4); }
+@media (max-width: 760px) {
+  .masthead { padding: 0 var(--s4); }
   .masthead p { display: none; }        /* the h1 carries the identity alone */
-  .modes { order: 3; margin-left: auto; }
-  .masthead-status { order: 4; flex-basis: 100%; text-align: left; margin-left: 0; }
 
-  #thread { padding: var(--s4) var(--s3) var(--s6); }
+  .frame { flex-direction: column; }
+  .rail {
+    width: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--rule);
+    padding: 0;
+    gap: 0;
+    overflow: visible;
+  }
+  .views { flex-direction: row; overflow-x: auto; }
+  .views button {
+    border-left: 0;
+    border-bottom: 2px solid transparent;
+    white-space: nowrap;
+  }
+  .views button[aria-selected="true"] { border-bottom-color: var(--accent); }
+  .rail-head { display: none; }
+  .tool-list { flex-direction: row; overflow-x: auto; border-top: 1px solid var(--rule); }
+  .tool-list button { border-left: 0; border-bottom: 2px solid transparent; white-space: nowrap; word-break: normal; }
+  .tool-list button[aria-current="true"] { border-bottom-color: var(--accent); }
+  .tool-list button .origin { display: none; }
+
+  .view-body { padding: var(--s4) var(--s3) var(--s6); }
   .composer { padding: var(--s3); }
-  #composer-tools { max-height: 64vh; }
-
   .grounds dl { grid-template-columns: 1fr; gap: var(--s0); }
   .grounds dt { margin-top: var(--s2); }
   .tool-fields { grid-template-columns: 1fr; }
+  .defect { grid-template-columns: 1fr; }
   .page { padding: var(--s7) var(--s4); }
 }

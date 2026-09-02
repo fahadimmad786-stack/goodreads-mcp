@@ -21,105 +21,118 @@
 <meta name="theme-color" content="#161d22" media="(prefers-color-scheme: dark)">
 <meta name="color-scheme" content="light dark">
 
-<!-- Same-origin, so the CSP's font-src 'self' allows it. Preloaded because
-     the whole interface is set in this one face; crossorigin is required on a
-     font preload even same-origin. -->
+<!-- Same-origin, so the CSP's font-src 'self' allows it. Two faces: the sans
+     for prose, the mono for data. Both regular cuts are preloaded because
+     the first paint uses both; crossorigin is required on a font preload
+     even same-origin. -->
+<link rel="preload" as="font" type="font/woff2"
+      href="/static/fonts/noto-sans-regular.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2"
       href="/static/fonts/jetbrains-mono-regular.woff2" crossorigin>
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
 
-<a class="skip-link" href="#thread">Skip to results</a>
+<a class="skip-link" href="#thread">Skip to content</a>
 
+<!-- One line. Carries no dataset figures: every number about the data
+     arrives inside a view, from a tool's own JSON. -->
 <header class="masthead">
-  <div>
-    <h1>goodreads-stats</h1>
-    <p>aggregate-only MCP server over BigQuery — every figure carries its n, its unit and its caveats</p>
-  </div>
-
-  <!-- Which path fetches the envelope. The rendering below is the same either
-       way, which is the point of offering both. -->
-  <div class="modes" id="modes" role="tablist" aria-label="Console mode">
-    <button type="button" id="mode-chat" role="tab" aria-selected="false"
-            aria-controls="pane-chat" tabindex="-1">chat</button>
-    <button type="button" id="mode-tools" role="tab" aria-selected="false"
-            aria-controls="pane-tools" tabindex="-1">tools</button>
-  </div>
-
+  <h1>goodreads-stats</h1>
+  <p>aggregate-only MCP server over BigQuery</p>
   <p class="masthead-status">
     <span class="dot" id="status-dot" aria-hidden="true"></span>
     <span id="status" role="status">connecting…</span>
   </p>
 </header>
 
-<main id="thread" tabindex="-1">
-  <div class="pane" id="pane-chat" role="tabpanel" aria-labelledby="mode-chat">
-    <section class="intro" id="intro">
-      <h2>Ask a statistical question about 1.85M Goodreads editions.</h2>
-      <p>
-        A model chooses the tool and writes the explanation. It does not write the
-        numbers: every figure below is rendered from the tool's own JSON, together
-        with the count it rests on, the unit one row counts, what the minimum-ratings
-        threshold excluded, and the caveats attached to the specific columns they
-        weaken.
-      </p>
-      <ul>
-        <li>The tool call is shown in full — name, parameters, bytes billed, cache hit or miss, and the BigQuery share of the wall time.</li>
-        <li>A refused call is a result, not an error. Asking for something the dataset cannot support tells you why it cannot.</li>
-        <li>A checker marks any numeral in the prose that does not appear in a tool result, so the interface's central claim is verifiable rather than asserted.</li>
-      </ul>
-    </section>
-  </div>
+<div class="frame">
+  <!-- The rail: which view, and -- in the Tools view -- which tool. A
+       vertical tablist: arrow keys move between views, one tab stop. -->
+  <aside class="rail">
+    <nav class="views" id="views" role="tablist" aria-label="Console views" aria-orientation="vertical">
+      <button type="button" id="tab-overview" role="tab" aria-selected="false"
+              aria-controls="view-overview" tabindex="-1">Overview</button>
+      <button type="button" id="tab-tools" role="tab" aria-selected="false"
+              aria-controls="view-tools" tabindex="-1">Tools</button>
+      <button type="button" id="tab-defects" role="tab" aria-selected="false"
+              aria-controls="view-defects" tabindex="-1">Defects</button>
+      <button type="button" id="tab-telemetry" role="tab" aria-selected="false"
+              aria-controls="view-telemetry" tabindex="-1">Telemetry</button>
+    </nav>
 
-  <div class="pane" id="pane-tools" role="tabpanel" aria-labelledby="mode-tools">
-    <section class="intro" id="intro-tools">
-      <h2>Call a tool directly. No model in this path.</h2>
-      <p>
-        Pick one of the server's tools and fill in its parameters. The result is
-        rendered by exactly the same code the chat mode uses — the same n, unit and
-        threshold block, the same caveats attached to the columns they weaken, the
-        same charts, the same refusal cards. Nothing here is interpreted, because
-        nothing here is generated.
-      </p>
-      <ul>
-        <li>The form is built from each tool's own JSON Schema, fetched over MCP. Every label, range and default below is the server's, not this console's.</li>
-        <li>A field left empty is not sent, so the card's parameter row shows exactly what you overrode. Defaults are printed beside each field.</li>
-        <li>Values are passed verbatim. A parameter the server refuses returns its refusal, with the reasoning behind the constraint — that is a result worth seeing, so nothing is corrected on the way in.</li>
-      </ul>
-    </section>
-  </div>
-</main>
+    <!-- Filled from /api/tools: one entry per tool, the guard probe last. -->
+    <div class="rail-tools" id="rail-tools" hidden>
+      <h2 class="rail-head">tools</h2>
+      <div class="tool-list" id="tool-list" role="list"></div>
+    </div>
+  </aside>
 
-<!-- Narrates what the thread is doing, for a reader who is not watching it. -->
+  <main id="thread" tabindex="-1">
+
+    <!-- OVERVIEW: what this is, the live counts, the starting points, and
+         the chat thread when a model is configured. -->
+    <section class="view" id="view-overview" role="tabpanel" aria-labelledby="tab-overview">
+      <div class="view-body">
+        <header class="lede">
+          <h2>Statistics over the Goodreads dump, with the grounding attached.</h2>
+          <p>
+            Twelve aggregate-only tools over two BigQuery tables. Every figure
+            leaves the server with the count it rests on, the unit one row
+            counts and what its threshold excluded, and every caveat stays
+            attached to the column it weakens — so a wrong number is
+            structurally hard to produce, not merely documented against.
+          </p>
+        </header>
+        <div class="tiles" id="overview-tiles" aria-label="Live row counts" role="group"></div>
+        <div class="starts" id="examples"></div>
+        <div id="chat-thread"></div>
+      </div>
+
+      <footer class="composer" id="composer-chat">
+        <div class="row">
+          <label class="sr-only" for="input">Ask a statistical question about the dataset</label>
+          <textarea id="input" rows="1" placeholder="Ask about the dataset…"></textarea>
+          <button id="send" type="button">ask</button>
+        </div>
+        <div class="footnote" id="composer-note">enter sends · shift+enter for a new line</div>
+      </footer>
+    </section>
+
+    <!-- TOOLS: the selected tool's form at the top, its results below. Every
+         field is generated from the tool's own JSON Schema. -->
+    <section class="view" id="view-tools" role="tabpanel" aria-labelledby="tab-tools">
+      <div class="view-body">
+        <div class="tool-panel" id="tool-panel">
+          <div class="tool-title" id="tool-title"></div>
+          <div class="tool-describe" id="tool-describe"></div>
+          <div class="tool-fields" id="tool-fields"></div>
+          <div class="tool-actions">
+            <button id="tool-run" type="button">run</button>
+            <button id="tool-reset" type="button" class="ghost">clear</button>
+            <span class="footnote">empty fields fall back to the server's defaults · enter runs</span>
+          </div>
+          <div class="starts compact" id="tool-presets"></div>
+        </div>
+        <div id="tool-thread"></div>
+      </div>
+    </section>
+
+    <!-- DEFECTS: dataset_overview as a view of its own. -->
+    <section class="view" id="view-defects" role="tabpanel" aria-labelledby="tab-defects">
+      <div class="view-body" id="defects"></div>
+    </section>
+
+    <!-- TELEMETRY: the local log, through the summariser's own code. -->
+    <section class="view" id="view-telemetry" role="tabpanel" aria-labelledby="tab-telemetry">
+      <div class="view-body" id="telemetry"></div>
+    </section>
+
+  </main>
+</div>
+
+<!-- Narrates what the console is doing, for a reader who is not watching it. -->
 <p class="sr-only" id="live" role="status" aria-live="polite"></p>
-
-<footer class="composer">
-  <div class="composer-inner" id="composer-chat">
-    <div class="examples" id="examples"></div>
-    <div class="row">
-      <label class="sr-only" for="input">Ask a statistical question about the dataset</label>
-      <textarea id="input" rows="1" placeholder="Ask about the dataset…"></textarea>
-      <button id="send" type="button">ask</button>
-    </div>
-    <div class="footnote">enter sends · shift+enter for a new line</div>
-  </div>
-
-  <div class="composer-inner" id="composer-tools">
-    <div class="examples" id="tool-presets"></div>
-    <div class="tool-head">
-      <label class="picker-label" for="tool-picker">tool</label>
-      <select id="tool-picker"></select>
-      <button id="tool-run" type="button">run</button>
-      <button id="tool-reset" type="button" class="ghost">clear</button>
-    </div>
-    <div class="tool-describe" id="tool-describe"></div>
-    <div class="tool-fields" id="tool-fields"></div>
-    <div class="footnote">
-      generated from the tool's schema · empty fields fall back to the server's defaults · enter runs
-    </div>
-  </div>
-</footer>
 
 <script type="module" src="/static/app.js"></script>
 </body>

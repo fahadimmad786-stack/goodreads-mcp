@@ -1,37 +1,43 @@
-/* The shell, and the chat mode's thread controller.
+/* The shell: four views on one rail, and the chat thread in the Overview.
  *
- * Two modes reach the same tools: a model choosing one from a question, and a
- * person filling in its parameters (tools.js). They share the whole of the
- * rendering — cards.js and charts.js — and differ only in what fetches the
- * envelope. Which modes are on offer is the server's answer, not a build-time
- * choice: `/api/health` reports whether an Anthropic key is configured, and
- * the chat box is not offered at all when it is not.
+ * Overview, Tools, Defects and Telemetry are panels of a vertical tablist in
+ * the left rail. The view is a property of the page, switched on the body, so
+ * showing one and hiding the rest is pure CSS; each view keeps its own state,
+ * so switching never discards what another has already fetched.
  *
- * Chat mode itself: the model's prose and the tool cards interleave in the
- * order the server emitted them, so a card sits where the model paused to
- * fetch it. Prose is kept as plain text until the turn's `contract` frame
- * arrives, at which point any numeral the checker could not source is marked
- * in place.
+ * Chat lives in the Overview. A model choosing the tool and a person filling
+ * in its form (tools.js) share the whole of the rendering -- cards.js and
+ * charts.js -- and differ only in what fetches the envelope. Which of the two
+ * is on offer is the server's answer: `/api/health` reports whether an
+ * Anthropic key is configured, and the composer is not shown when it is not.
+ *
+ * Chat itself: the model's prose and the tool cards interleave in the order
+ * the server emitted them, so a card sits where the model paused to fetch it.
+ * Prose is kept as plain text until the turn's `contract` frame arrives, at
+ * which point any numeral the checker could not source is marked in place.
  */
 
 import {
   renderToolCard, renderRefusalCard, renderPendingCard, escapeHtml, node as el,
 } from './cards.js';
 import { announce } from './live.js';
-import { initToolMode } from './tools.js';
+import { initToolMode, PRESETS, runPreset } from './tools.js';
+import { initOverview } from './overview.js';
+import { catalogue } from './data.js';
 
-const thread = document.getElementById('thread');
-const chatPane = document.getElementById('pane-chat');
+const main = document.getElementById('thread');
+const chatThread = document.getElementById('chat-thread');
 const input = document.getElementById('input');
 const send = document.getElementById('send');
+const composer = document.getElementById('composer-chat');
 const status = document.getElementById('status');
 const statusDot = document.getElementById('status-dot');
-const modeButtons = {
-  chat: document.getElementById('mode-chat'),
-  tools: document.getElementById('mode-tools'),
-};
+const railTools = document.getElementById('rail-tools');
 
-const MODE_KEY = 'gr_mode';
+const VIEWS = ['overview', 'tools', 'defects', 'telemetry'];
+const tabs = Object.fromEntries(VIEWS.map((v) => [v, document.getElementById(`tab-${v}`)]));
+
+const VIEW_KEY = 'gr_view';
 let chatEnabled = true;
 
 /* The access key arrives as ?k= on the first visit and is exchanged for an
@@ -81,11 +87,11 @@ class Turn {
     this.proseBlocks = [];
     this.proseLen = 0;
     this.current = null;
-    chatPane.appendChild(this.root);
+    chatThread.appendChild(this.root);
     this.scroll();
   }
 
-  scroll() { thread.scrollTop = thread.scrollHeight; }
+  scroll() { main.scrollTop = main.scrollHeight; }
 
   thinking(text) {
     if (!this.reasoning) {
@@ -178,14 +184,13 @@ class Turn {
 /* --- transport ----------------------------------------------------------- */
 
 async function ask(text) {
-  if (busy) return;
+  if (busy || !chatEnabled) return;
   busy = true;
   send.disabled = true;
   send.setAttribute('aria-busy', 'true');
   announce('working');
   input.value = '';
-  const intro = document.getElementById('intro');
-  if (intro) intro.remove();
+  setView('overview');
 
   const turn = new Turn(text);
 
@@ -280,73 +285,115 @@ function finish() {
   input.focus();
 }
 
-/* --- chrome -------------------------------------------------------------- */
+/* --- starting points -----------------------------------------------------
+ *
+ * Cards, in a grid. Questions go to the model; tool calls go to the Tools
+ * view and run there. Two of each exist to be refused, and say so. A tool
+ * call card is offered only for a tool the catalogue actually lists. */
 
-function buildExamples() {
+async function buildStarts() {
   const box = document.getElementById('examples');
-  box.appendChild(el('span', 'lead', 'try'));
-  for (const ex of EXAMPLES) {
+  box.replaceChildren();
+  box.appendChild(el('div', 'lead label', 'start from'));
+
+  if (chatEnabled) {
+    for (const ex of EXAMPLES) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.appendChild(el('span', 'kind', 'question'));
+      b.appendChild(document.createTextNode(ex.q));
+      if (ex.warn) b.appendChild(el('span', 'warn', ex.warn));
+      b.addEventListener('click', () => ask(ex.q));
+      box.appendChild(b);
+    }
+  }
+
+  let tools = [];
+  try { tools = await catalogue(); } catch (err) { /* the tool cards are simply absent */ }
+  const known = new Set(tools.map((t) => t.name));
+  for (const preset of PRESETS) {
+    if (!known.has(preset.tool)) continue;
     const b = document.createElement('button');
     b.type = 'button';
-    b.appendChild(document.createTextNode(ex.q));
-    if (ex.warn) b.appendChild(el('span', 'warn', ` ${ex.warn}`));
-    b.addEventListener('click', () => ask(ex.q));
+    b.appendChild(el('span', 'kind', 'tool call'));
+    b.appendChild(document.createTextNode(preset.label));
+    b.appendChild(el('span', 'tool', preset.tool));
+    if (preset.warn) b.appendChild(el('span', 'warn', preset.warn));
+    b.addEventListener('click', async () => {
+      setView('tools');
+      await initToolMode();
+      runPreset(preset);
+    });
     box.appendChild(b);
   }
 }
 
-/* --- modes ---------------------------------------------------------------
+/* --- views ---------------------------------------------------------------
  *
- * The mode is a property of the page, switched on the body, so the two panes
- * and the two composers are pure CSS. Each keeps its own thread, so switching
- * mode never discards what the other one has already fetched. */
+ * The view is a property of the page, switched on the body, so the four
+ * panels are pure CSS. A view initialises itself the first time it is shown
+ * and never again, so nothing is fetched for a view nobody opens. */
 
-function setMode(mode, { focusTab = false } = {}) {
-  const target = mode === 'chat' && !chatEnabled ? 'tools' : mode;
-  document.body.dataset.mode = target;
+const INIT = {
+  overview: () => initOverview(),
+  tools: () => initToolMode(),
+  defects: () => initDefects(),
+  telemetry: () => initTelemetry(),
+};
+
+function setView(view, { focusTab = false } = {}) {
+  const target = VIEWS.includes(view) ? view : 'overview';
+  document.body.dataset.view = target;
   /* Roving tabindex: one tab stop for the whole tablist, arrow keys inside
-   * it. That is the tablist pattern, and it keeps the header from costing
-   * two stops on the way to the composer. */
-  for (const [name, button] of Object.entries(modeButtons)) {
+   * it. That is the tablist pattern, and it keeps the rail from costing four
+   * stops on the way to the content. */
+  for (const [name, button] of Object.entries(tabs)) {
     const selected = name === target;
     button.setAttribute('aria-selected', String(selected));
     button.tabIndex = selected ? 0 : -1;
   }
-  if (focusTab) modeButtons[target].focus();
-  try { localStorage.setItem(MODE_KEY, target); } catch (err) { /* private mode */ }
-  if (target === 'tools') initToolMode();
-  else if (focusTab === false) input.focus();
+  railTools.hidden = target !== 'tools';
+  if (focusTab) tabs[target].focus();
+  try { localStorage.setItem(VIEW_KEY, target); } catch (err) { /* private mode */ }
+  INIT[target]();
 }
 
-/* Left/right move between tabs, home/end jump to the ends -- the keyboard
- * contract a tablist advertises by having role="tab". */
+/* Up/down and left/right move between tabs, home/end jump to the ends -- the
+ * keyboard contract a tablist advertises by having role="tab". */
 function onTabKey(event) {
-  const order = ['chat', 'tools'].filter((m) => !modeButtons[m].disabled);
-  const current = document.body.dataset.mode;
-  const at = Math.max(order.indexOf(current), 0);
+  const current = document.body.dataset.view;
+  const at = Math.max(VIEWS.indexOf(current), 0);
   let next = null;
-  if (event.key === 'ArrowRight' || event.key === 'ArrowDown') next = order[(at + 1) % order.length];
-  else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') next = order[(at - 1 + order.length) % order.length];
-  else if (event.key === 'Home') next = order[0];
-  else if (event.key === 'End') next = order[order.length - 1];
+  if (event.key === 'ArrowRight' || event.key === 'ArrowDown') next = VIEWS[(at + 1) % VIEWS.length];
+  else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') next = VIEWS[(at - 1 + VIEWS.length) % VIEWS.length];
+  else if (event.key === 'Home') next = VIEWS[0];
+  else if (event.key === 'End') next = VIEWS[VIEWS.length - 1];
   if (!next) return;
   event.preventDefault();
-  setMode(next, { focusTab: true });
+  setView(next, { focusTab: true });
 }
 
-/* Chat is offered only when the server says a key is configured. The button is
- * disabled rather than removed, so the reason is visible rather than absent. */
+/* Placeholders until each view's module lands; each view replaces this. */
+function initDefects() {
+  const box = document.getElementById('defects');
+  if (!box.childElementCount) box.appendChild(el('div', 'empty', 'the Defects view is not built yet'));
+}
+function initTelemetry() {
+  const box = document.getElementById('telemetry');
+  if (!box.childElementCount) box.appendChild(el('div', 'empty', 'the Telemetry view is not built yet'));
+}
+
+/* Chat is offered only when the server says a key is configured. The
+ * composer is hidden and the reason is stated where it stood, so the mode
+ * is visibly absent rather than silently missing. */
 function applyChatAvailability(enabled) {
   chatEnabled = enabled;
-  modeButtons.chat.disabled = !enabled;
-  const why = enabled
-    ? 'a model chooses the tool and writes the prose'
-    : 'off: this deployment has no ANTHROPIC_API_KEY. The tool mode needs none.';
-  modeButtons.chat.title = why;
-  /* The tooltip is not reachable by keyboard or screen reader, so the reason
-   * is also given as the button's accessible description. */
-  modeButtons.chat.setAttribute('aria-label', `chat mode — ${why}`);
-  if (!enabled) modeButtons.chat.appendChild(el('span', 'off', 'no key'));
+  composer.hidden = !enabled;
+  if (!enabled) {
+    const why = el('div', 'footnote',
+      'chat is off: this deployment has no ANTHROPIC_API_KEY. The Tools view needs none.');
+    document.getElementById('examples').before(why);
+  }
 }
 
 async function loadHealth() {
@@ -372,10 +419,11 @@ async function loadHealth() {
    * page itself is behind the same token. Default to on if it is missing
    * anyway — /api/chat says so plainly rather than failing obscurely. */
   applyChatAvailability(!health || health.chat_enabled !== false);
+  buildStarts();
 
   let remembered = null;
-  try { remembered = localStorage.getItem(MODE_KEY); } catch (err) { /* private mode */ }
-  setMode(remembered === 'tools' || remembered === 'chat' ? remembered : 'chat');
+  try { remembered = localStorage.getItem(VIEW_KEY); } catch (err) { /* private mode */ }
+  setView(VIEWS.includes(remembered) ? remembered : 'overview');
 }
 
 input.addEventListener('keydown', (e) => {
@@ -396,10 +444,10 @@ send.addEventListener('click', () => {
   if (text) ask(text);
 });
 
-modeButtons.chat.addEventListener('click', () => setMode('chat'));
-modeButtons.tools.addEventListener('click', () => setMode('tools'));
-document.getElementById('modes').addEventListener('keydown', onTabKey);
+for (const [name, button] of Object.entries(tabs)) {
+  button.addEventListener('click', () => setView(name));
+}
+document.getElementById('views').addEventListener('keydown', onTabKey);
 
 stripAccessKeyFromUrl();
-buildExamples();
 loadHealth();

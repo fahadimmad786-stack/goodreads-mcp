@@ -1344,19 +1344,23 @@ def test_no_shadow_gradient_or_second_accent_creeps_in():
 FONTS = STATIC / "fonts"
 
 
-def test_the_typeface_is_self_hosted_and_subset_small():
+def test_the_typefaces_are_self_hosted_and_subset_small():
     faces = sorted(FONTS.glob("*.woff2"))
-    assert len(faces) == 2, "expected one regular and one semibold woff2"
+    assert len(faces) == 4, "expected regular and semibold cuts of the sans and the mono"
+    assert {f.name for f in faces} == {
+        "noto-sans-regular.woff2", "noto-sans-medium.woff2",
+        "jetbrains-mono-regular.woff2", "jetbrains-mono-semibold.woff2",
+    }
     for face in faces:
-        # Subset to Latin plus the punctuation the UI uses. A full NerdFont
-        # build is ~200x this; if one is dropped in unsubset, fail.
+        # Subset to Latin plus the punctuation the UI uses. A full build is
+        # ~200x this; if one is dropped in unsubset, fail.
         assert face.stat().st_size < 60_000, f"{face.name} is not subset"
 
 
-def test_the_font_licence_ships_with_the_font():
+def test_each_font_licence_ships_with_its_font():
     """
-    The OFL requires the licence to travel with the font. Copied verbatim from
-    the system package rather than retyped.
+    Both licences require their text to travel with the font. Copied verbatim
+    from the system packages rather than retyped.
     """
     ofl = FONTS / "OFL.txt"
     assert ofl.exists(), "no OFL.txt beside the fonts"
@@ -1364,13 +1368,19 @@ def test_the_font_licence_ships_with_the_font():
     assert "SIL Open Font License" in text
     assert "JetBrains Mono" in text
 
+    noto = FONTS / "NOTO-LICENSE.txt"
+    assert noto.exists(), "no NOTO-LICENSE.txt beside the fonts"
+    text = noto.read_text(encoding="utf-8")
+    assert "Noto Sans" in text
+    assert "Apache License" in text
+
 
 def test_the_stylesheet_loads_the_font_from_this_origin_only():
     assert "@font-face" in APP_CSS
     for src in re.findall(r"src:\s*url\((.*?)\)", APP_CSS):
         assert src.strip('"\'').startswith("/static/fonts/"), src
     # A figure must never wait on a font; once per @font-face.
-    assert _css_without_comments(APP_CSS).count("font-display: swap") == 2
+    assert _css_without_comments(APP_CSS).count("font-display: swap") == 4
 
 
 def test_the_font_is_packaged_for_the_deployed_image():
@@ -1383,17 +1393,28 @@ def test_the_font_is_packaged_for_the_deployed_image():
     assert 'webchat = ["static/*", "static/fonts/*"]' in pyproject
 
 
-def test_one_typeface_throughout():
+def test_two_faces_prose_in_the_sans_data_in_the_mono():
     """
-    The aesthetic commitment: the prose is set in the same face as the data,
-    so it reads as part of the readout. A reintroduced sans stack would undo
-    it silently.
+    The typographic commitment: prose reads in a sans, data reads in the mono,
+    so what is said and what is measured are told apart by face alone. The
+    body is set in the sans; the mono is applied to the data selectors by
+    name; nothing asks for a face this sheet does not ship.
     """
     declarations = _css_without_comments(APP_CSS)
-    assert "--sans" not in declarations
+    assert '--sans: "Noto Sans"' in declarations
     assert '--mono: "JetBrains Mono"' in declarations
+    body = re.search(r"\nbody \{[^}]*\}", declarations).group(0)
+    assert "var(--sans)" in body, "the body is not set in the sans"
+    # The data selectors share one mono rule, so the decision is stated once.
+    mono_rule = re.search(r"\n[^{}]*\.params,[^{}]*\{\s*font-family: var\(--mono\);\s*\}", declarations)
+    assert mono_rule, "no shared mono rule for the data selectors"
+    for selector in (".params", ".qmeta", ".tool-name", ".grounds b", ".tile .value", "table"):
+        assert selector.split()[0] in declarations, selector
     # No synthetic obliques: no italic file is shipped, so nothing may ask for one.
     assert "font-style: italic" not in declarations
+    # And no third face: every font-family names one of the two stacks.
+    families = set(re.findall(r"font-family:\s*([^;]+);", declarations))
+    assert families <= {"var(--sans)", "var(--mono)", '"Noto Sans"', '"JetBrains Mono"'}, families
 
 
 # --- the page-load moment --------------------------------------------------
