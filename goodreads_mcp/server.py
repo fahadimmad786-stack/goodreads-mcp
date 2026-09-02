@@ -176,6 +176,7 @@ def dataset_overview() -> dict[str, Any]:
             **b,
             "coverage_pct": {
                 "with_ratings": pct(b["n_books_with_ratings"]),
+                "unrated": pct(b["n_books_unrated"]),
                 "language_normalised": pct(b["n_language_normalised"]),
                 "pages_number": pct(b["n_pages_number"]),
                 "description": pct(b["n_description"]),
@@ -202,6 +203,19 @@ def dataset_overview() -> dict[str, Any]:
         "unusable_columns": {
             "publish_day": "placeholder for most rows; no tool reads it and a query guard rejects it",
             "language": "unnormalised; use language_normalised",
+        },
+        # The one defect this tool cannot measure live: the guard rejects any
+        # SQL that names the column, by design. So the figure is the one
+        # profiled when the table was loaded (RULES.md 1.1, DATA_NOTES.md #1),
+        # stated with its n and its provenance rather than left as prose only.
+        "publish_day_placeholder": {
+            "n_rows": 892696,
+            "n_rows_total": 1850115,
+            "pct_of_rows": 48.25,
+            "measured": (
+                "profiled once at load; the query guard forbids reading this "
+                "column at serve time, so this figure is not refreshed"
+            ),
         },
         "join": {
             "key": "normalised title text",

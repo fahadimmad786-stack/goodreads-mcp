@@ -23,6 +23,7 @@ import {
 import { announce } from './live.js';
 import { initToolMode, PRESETS, runPreset } from './tools.js';
 import { initOverview } from './overview.js';
+import { initDefects } from './defects.js';
 import { catalogue } from './data.js';
 
 const main = document.getElementById('thread');
@@ -373,11 +374,7 @@ function onTabKey(event) {
   setView(next, { focusTab: true });
 }
 
-/* Placeholders until each view's module lands; each view replaces this. */
-function initDefects() {
-  const box = document.getElementById('defects');
-  if (!box.childElementCount) box.appendChild(el('div', 'empty', 'the Defects view is not built yet'));
-}
+/* Placeholder until the Telemetry module lands. */
 function initTelemetry() {
   const box = document.getElementById('telemetry');
   if (!box.childElementCount) box.appendChild(el('div', 'empty', 'the Telemetry view is not built yet'));

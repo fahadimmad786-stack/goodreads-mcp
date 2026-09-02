@@ -588,12 +588,17 @@ def test_every_column_the_cards_read_exists_in_the_servers_sql():
 
     from goodreads_mcp import queries
 
-    cards = (
-        pathlib.Path(__file__).resolve().parent.parent
-        / "webchat" / "static" / "cards.js"
-    ).read_text(encoding="utf-8")
+    static = pathlib.Path(__file__).resolve().parent.parent / "webchat" / "static"
+    cards = (static / "cards.js").read_text(encoding="utf-8")
+    defects = (static / "defects.js").read_text(encoding="utf-8")
 
     referenced: set[str] = set()
+    # defects.js addresses the overview envelope by dotted path; every leaf
+    # must be a name the server produces. The LIVE map is the only place
+    # these paths are written.
+    live = defects.split("const LIVE = {", 1)[1].split("\n};", 1)[0]
+    for path in re.findall(r"'([a-z_0-9.]+)'", live):
+        referenced.add(path.rsplit(".", 1)[-1])
     # cat: 'authors'  /  value: 'n_ratings'  /  x: 'publish_year'  /  y: 'n_books'
     for match in re.finditer(r"\b(?:cat|value|x|y):\s*'([a-z_0-9]+)'", cards):
         referenced.add(match.group(1))
@@ -616,7 +621,7 @@ def test_every_column_the_cards_read_exists_in_the_servers_sql():
         name for name in referenced
         if name not in client_side and name not in server_text
     )
-    assert not missing, f"cards.js reads names the server never produces: {missing}"
+    assert not missing, f"the renderers read names the server never produces: {missing}"
 
 
 # --- the no-model mode -----------------------------------------------------
@@ -1532,3 +1537,74 @@ def test_the_description_rendering_does_not_preserve_source_whitespace():
     assert not re.search(r"node\('p', '', tool\.description", body)
     rule = re.search(r"\.tool-describe p \{[^}]*\}", APP_CSS)
     assert rule and "pre-wrap" not in rule.group(0)
+
+
+# --- the Defects view ------------------------------------------------------
+
+
+DEFECTS_JS = (STATIC / "defects.js").read_text(encoding="utf-8")
+
+
+def _live_map() -> dict[str, list[str]]:
+    """The caveat-id -> envelope-path map, parsed out of defects.js."""
+    block = DEFECTS_JS.split("const LIVE = {", 1)[1].split("\n};", 1)[0]
+    out: dict[str, list[str]] = {}
+    for entry in re.finditer(r"\n  (\w+): \[(.*?)\]", block, re.S):
+        out[entry.group(1)] = re.findall(r"'([a-z_0-9.]+)'", entry.group(2))
+    return out
+
+
+def test_the_defects_view_quantifies_only_real_caveats():
+    """
+    Every id the view places live figures beside must be a registry id, and
+    the three headline defects must be among them.
+    """
+    live = _live_map()
+    assert live, "LIVE map not found; check the parse"
+    unknown = set(live) - set(caveats._REGISTRY)
+    assert not unknown, f"defects.js quantifies caveats the server does not have: {sorted(unknown)}"
+    for headline in ("unrated_books", "edition_duplication", "publish_day_unusable"):
+        assert headline in live, headline
+    # Every measured caveat -- the ones DATA_NOTES.md does not mention -- is
+    # quantified, since those are the ones a reader has no other warning of.
+    measured = {i for i, c in caveats._REGISTRY.items() if c.source == "measured"}
+    assert measured <= set(live), f"measured caveats with no live figure: {sorted(measured - set(live))}"
+
+
+def test_the_three_headline_defects_are_hero_tiles():
+    """The user must not be able to miss them: each has its own tile."""
+    for label in ("unrated editions", "edition overcount of n_ratings", "publish_day placeholder rows"):
+        assert label in DEFECTS_JS, label
+    assert "tile hero" in DEFECTS_JS
+
+
+def test_dataset_overview_states_the_publish_day_share_as_a_field_with_its_n():
+    """
+    The guard forbids counting publish_day live, so the profiled figure is
+    sent as a structured block -- count, total, share, provenance -- rather
+    than left as prose only. The two statements of the number must agree.
+    """
+    src = __import__("inspect").getsource(server)
+    block = src.split('"publish_day_placeholder": {', 1)[1].split("},", 1)[0]
+    for key in ("n_rows", "n_rows_total", "pct_of_rows", "measured"):
+        assert f'"{key}"' in block, key
+    n_rows = int(re.search(r'"n_rows": (\d+)', block).group(1))
+    pct = re.search(r'"pct_of_rows": ([\d.]+)', block).group(1)
+    caveat = caveats._REGISTRY["publish_day_unusable"].text
+    assert f"{n_rows:,}" in caveat, "the block and the caveat disagree on the count"
+    assert f"{pct}%" in caveat, "the block and the caveat disagree on the share"
+    # And the unrated share travels beside the unrated count.
+    assert '"unrated": pct(b["n_books_unrated"])' in src
+
+
+def test_the_defects_view_renders_from_the_overview_envelope_only():
+    """
+    One data source: the shared dataset_overview call. No second fetch, no
+    figure computed in the client -- a share appears only if the server sent
+    it.
+    """
+    body = _strip_comments(DEFECTS_JS)
+    assert "overview()" in body
+    assert "fetch(" not in body
+    for arithmetic in (" / ", " * 100", "toFixed("):
+        assert arithmetic not in body, f"defects.js computes a figure: {arithmetic!r}"
