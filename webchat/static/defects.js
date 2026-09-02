@@ -231,10 +231,12 @@ function caveatSection(d, caveats) {
     row.appendChild(id);
 
     const body = node('div', '');
-    const live = (LIVE[c.id] || []).map((path) => [leaf(path), dig(d, path)]).filter(([, v]) => v !== undefined);
+    const live = (LIVE[c.id] || [])
+      .map((path) => [leaf(path), dig(d, path), isShare(path)])
+      .filter(([, v]) => v !== undefined);
     if (live.length) {
       const figures = node('div', 'figures');
-      for (const [k, v] of live) figures.appendChild(stat(k, v));
+      for (const [k, v, share] of live) figures.appendChild(stat(k, v, share));
       body.appendChild(figures);
     }
     body.appendChild(node('p', 'text', c.text));
@@ -260,11 +262,17 @@ function sectionHead(title, note) {
   return head;
 }
 
-function stat(key, value) {
+/* A share is shown with its sign; the value itself is the server's. */
+function stat(key, value, share = false) {
   const s = node('span', 'stat');
   s.appendChild(document.createTextNode(`${key} `));
-  s.appendChild(node('b', '', fmt(value)));
+  s.appendChild(node('b', '', share && typeof value === 'number' ? `${fmt(value)}%` : fmt(value)));
   return s;
+}
+
+/* The server names its shares: a `coverage_pct` block, or a `pct_` leaf. */
+function isShare(path) {
+  return path.includes('.coverage_pct.') || /(^|\.)pct(_|$)/.test(leaf(path));
 }
 
 function costLine(qm, mcpMs) {

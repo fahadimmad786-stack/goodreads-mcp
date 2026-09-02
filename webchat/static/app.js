@@ -345,6 +345,9 @@ const INIT = {
 
 function setView(view, { focusTab = false } = {}) {
   const target = VIEWS.includes(view) ? view : 'overview';
+  /* One scroller serves every view, so a change of view starts at its top
+   * rather than wherever the last view was left. */
+  if (document.body.dataset.view !== target) main.scrollTop = 0;
   document.body.dataset.view = target;
   /* Roving tabindex: one tab stop for the whole tablist, arrow keys inside
    * it. That is the tablist pattern, and it keeps the rail from costing four

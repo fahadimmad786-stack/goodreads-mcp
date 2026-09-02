@@ -18,7 +18,7 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
 gcloud auth application-default login          # BigQuery uses ADC
 
 # Tests
-.venv/bin/python -m pytest tests/ -q           # 50 offline invariant tests, no network
+.venv/bin/python -m pytest tests/ -q           # ~190 offline invariant tests, no network
 .venv/bin/python -m pytest tests/test_guards.py::test_work_key_preserves_ranges_and_drops_volume_numbers -q
 .venv/bin/python tests/smoke_live.py           # 18 live calls + a cache-miss probe, needs ADC
 
@@ -109,7 +109,11 @@ The organising idea: **the dataset's defects are handled structurally, not by do
   - **Tool mode passes values verbatim.** `min_ratings=0` and `unit="chapters"` reach the server unaltered; `min`/`max` are printed on the field rather than set as HTML attributes that would clamp them. The refusal is the interesting result. `/api/run` checks only that the tool name is known and the params are a flat object of scalars — never whether a value is one the tool will like.
   - **The design system is enforced by tests, not by review.** Every size in `app.css` comes from the type scale or the space scale, colour appears only in the token blocks, and both themes define every token. A stray `font-size: 14px`, a `padding: 17px`, a hex colour inside a rule, a `box-shadow`, a removed focus ring, or a token with no dark value each fail `tests/test_webchat.py`. Contrast is likewise measured: 4.5:1 for text, 3:1 for control edges, marks and focus rings, in both themes — which is why `--edge` exists separately from the decorative `--rule` hairlines, and `--accent-fill` separately from `--accent`.
   - **The console must never be indexed and must never leak its key.** Every response carries `X-Robots-Tag` and `Referrer-Policy: no-referrer` from one middleware; `/robots.txt` is the single route that answers without the token, deliberately. No page may write the access token into an href — the client builds no links at all, and a test asserts it. `?k=` is stripped from the address bar once the cookie is set.
-  - **`ANTHROPIC_API_KEY` is optional; `CHAT_ACCESS_TOKEN` is not.** `config.verify()` requires only the second. With no key the agent is never constructed, the chat button is disabled with the reason in its tooltip, and `/api/chat` answers 503 naming the mode that works.
+  - **`ANTHROPIC_API_KEY` is optional; `CHAT_ACCESS_TOKEN` is not.** `config.verify()` requires only the second. With no key the agent is never constructed, the composer is hidden with the reason stated where it stood, and `/api/chat` answers 503 naming the mode that works.
+  - **Four views, one scroller, one rail.** Overview (chat lives here), Tools, Defects and Telemetry are panels of a vertical tablist in the rail; `app.js` switches `body[data-view]` and each view initialises itself once, on first show. Overview and Defects share one cached `dataset_overview` call through `data.js` so its three queries are not billed twice. `defects.js` addresses the envelope by dotted path in its `LIVE` map; the column-name scan covers it, so a renamed server field fails a test rather than rendering a dash.
+  - **Two faces, by job.** Prose is the sans, data is the mono, and the mono is applied by one shared selector list near the top of `app.css`. A test asserts the body is set in `--sans` and that no third face appears.
+  - **Telemetry is the CLI's code behind a route.** `/api/telemetry` calls `telemetry_cli.load()`, `summarise()` and `pct()` and adds only the scope label and the path. It is labelled local-session; the console holds no Cloud Logging credential and must not grow one.
+  - **`query_meta.statements` is the SQL inspector's source.** `bq.run()` attaches `sql` and `params` to each job's meta and `merge_meta()` carries them; a card shows the disclosure only when the field is present, so a server built before it simply shows none.
 
 - **Several tests assert on source text** via `inspect.getsource(server)`. Renaming a helper or reformatting a `caveats.collect(...)` call can fail a test without changing behaviour. That is intentional — it is how "every tool reporting `pooled_rating` states the duplication caveat" is enforced — but expect it during refactors.
 - **FastMCP wraps tool functions.** To call one directly, use `getattr(tool, "fn", tool)`, as `tests/smoke_live.py` does.

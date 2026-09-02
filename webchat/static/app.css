@@ -151,7 +151,7 @@
 
   --measure: 68ch;    /* the prose column */
   --column:  74rem;   /* a view's own width */
-  --rail:    15rem;   /* the navigation rail */
+  --rail:    16rem;   /* the navigation rail */
   --control: 2.4rem;  /* one height for every button, input and select */
 }
 
@@ -432,7 +432,7 @@ code, pre, kbd,
   display: flex;
   align-items: baseline;
   gap: var(--s2);
-  word-break: break-all;
+  overflow-wrap: anywhere;
 }
 .tool-list button:hover:not([aria-current="true"]) {
   background: var(--accent-soft);
@@ -738,9 +738,11 @@ tr.flagged td:first-child::after {
   font: var(--t-micro) var(--mono);
 }
 
-th .mk {
+/* A caveat marker: on a column header, a cell, or a grounds value. One rule
+   wherever it lands, so a marker can never read as part of the number. */
+.mk {
   color: var(--accent-ink);
-  font-size: var(--t-micro);
+  font: var(--t-micro)/var(--lh-flat) var(--mono);
   vertical-align: super;
   cursor: help;
   margin-left: 1px;
@@ -794,6 +796,7 @@ th.hl, td.hl { background: var(--accent-soft); }
 .caveat .mk {
   color: var(--accent-ink);
   font-size: var(--t-meta);
+  vertical-align: baseline;
 }
 .caveat .src {
   color: var(--ink-3);
@@ -1137,7 +1140,7 @@ details.more[open] summary { margin-bottom: var(--s1); }
 .defect .id .name { font: var(--t-sm)/var(--lh-tight) var(--mono); color: var(--ink); font-weight: 600; word-break: break-all; }
 .defect .src { color: var(--ink-3); border-color: var(--rule-2); }
 .defect .src.measured { color: var(--flag); border-color: currentColor; }
-.defect .figures {
+.figures {
   display: flex;
   flex-wrap: wrap;
   gap: var(--s2) var(--s4);

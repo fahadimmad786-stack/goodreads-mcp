@@ -447,8 +447,23 @@ A browser interface for the same twelve tools, deployed as a **second** Cloud
 Run service, `goodreads-chat`. It exists to make the server's central property
 visible: figures arrive with their limits attached.
 
-Two modes reach the tools, and the toggle in the masthead is the only
-difference between them:
+The console is four views on a left rail. **Overview** is the default: one
+paragraph, the live row counts from `dataset_overview` as tiles, the starting
+points as cards, and the chat thread with its composer at the foot. **Tools**
+is the explorer: the tool list in the rail, the selected tool's form at the
+top of the main area, results below. **Defects** is `dataset_overview` laid out
+by defect -- the unrated editions, the edition overcount and the placeholder
+day as hero tiles, then every caveat with the live figures that quantify it.
+**Telemetry** summarises the local log through the `goodreads-telemetry`
+command's own functions, and says so: it is labelled local-session, because a
+deployed server writes to Cloud Logging, which the console cannot read.
+
+Every result card carries a closed **query** disclosure with each statement
+behind the figure and the values bound to its named parameters, carried in
+`query_meta.statements` by `merge_meta()`.
+
+Two paths reach the tools -- a model from a question, or you from the form --
+and the path is the only difference between them:
 
 | | **chat** | **tools** |
 |---|---|---|
@@ -674,19 +689,20 @@ the console simpler.
 
 ### Design notes
 
-**Typeface.** Everything is set in JetBrains Mono, subset to Latin plus the
-punctuation the UI uses and served from this origin — 39 KB for two weights,
-no external request, and the CSP's `font-src 'self'` would block a CDN anyway.
-One face for prose as well as data is the aesthetic commitment the console
-rests on: it is an instrument for reading figures, with tabular numerals, an
-unambiguous `0`/`O`, and parameter columns that line up because the characters
-are the same width. Setting the prose in the same face says the prose is part
-of the readout rather than wrapped around it.
+**Typefaces.** Two, by job. Prose -- paragraphs, headings, labels, buttons --
+is set in Noto Sans; data -- numerals, parameters, tool and column names, SQL,
+metadata -- is set in JetBrains Mono, with tabular numerals, an unambiguous
+`0`/`O`, and parameter columns that line up because the characters are the
+same width. A reader tells what is being said from what is being measured by
+the face alone. Both are subset to Latin plus the punctuation the UI uses and
+served from this origin -- about 57 KB for four files, no external request,
+and the CSP's `font-src 'self'` would block a CDN anyway.
 
 > JetBrains Mono, © 2020 The JetBrains Mono Project Authors, licensed under the
-> SIL Open Font License 1.1. The licence ships beside the subset files at
-> `webchat/static/fonts/OFL.txt`; upstream is
-> <https://github.com/JetBrains/JetBrainsMono>.
+> SIL Open Font License 1.1; the licence ships at `webchat/static/fonts/OFL.txt`,
+> upstream <https://github.com/JetBrains/JetBrainsMono>. Noto Sans, © 2012
+> Google Inc., subset from the system package's Apache-2.0 build; that licence
+> ships at `webchat/static/fonts/NOTO-LICENSE.txt`.
 
 **Palette.** One accent — cyan, `#0094a8` light and `#00a6bc` dark — plus one
 reserved status ink for refusals and placeholder-inflated rows. The cyan was
@@ -796,9 +812,12 @@ in them, and values that reach the server exactly as typed.
 
 MIT — see [`LICENSE`](LICENSE).
 
-One bundled asset is licensed separately and is **not** covered by the MIT
-grant: `webchat/static/fonts/jetbrains-mono-*.woff2` is JetBrains Mono,
-© 2020 The JetBrains Mono Project Authors, under the SIL Open Font License 1.1.
-Its licence travels with it at `webchat/static/fonts/OFL.txt`. The OFL permits
+Two bundled assets are licensed separately and are **not** covered by the MIT
+grant. `webchat/static/fonts/jetbrains-mono-*.woff2` is JetBrains Mono,
+© 2020 The JetBrains Mono Project Authors, under the SIL Open Font License 1.1;
+its licence travels with it at `webchat/static/fonts/OFL.txt`. The OFL permits
 bundling and redistribution as done here; it does not permit selling the font
-files on their own.
+files on their own. `webchat/static/fonts/noto-sans-*.woff2` is Noto Sans,
+© 2012 Google Inc., subset from the Apache-2.0-licensed build shipped in the
+system `noto-fonts` package; that licence travels with it at
+`webchat/static/fonts/NOTO-LICENSE.txt`.
