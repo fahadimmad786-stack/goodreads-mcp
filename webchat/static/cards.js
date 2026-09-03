@@ -345,6 +345,10 @@ function kvList(obj, markers) {
 
 /* --- caveats ------------------------------------------------------------- */
 
+/* Between two markers on one field. A comma, because a space alone still
+ * reads as a pair of digits at this size. */
+const MARKER_SEP = ',';
+
 class MarkerIndex {
   constructor(caveats) {
     this.byField = new Map();
@@ -359,9 +363,18 @@ class MarkerIndex {
     });
   }
 
-  /* Append markers for `field` to `target`, if any caveat claims that field. */
+  /* Append markers for `field` to `target`, if any caveat claims that field.
+   *
+   * Two markers set side by side read as one number -- a field carrying
+   * caveats 2 and 3 would say "caveat 23", which is a different caveat and,
+   * once the registry passes ten, an existing one. So consecutive markers are
+   * separated by a superscript comma. It is written here rather than at each
+   * call site so headers, cells and grounds values all separate the same way,
+   * and the caveat list below them shows the same marker glyph. */
   decorate(target, field) {
-    for (const m of this.byField.get(field) || []) {
+    const claims = this.byField.get(field) || [];
+    claims.forEach((m, i) => {
+      if (i) target.appendChild(node('span', 'mk sep', MARKER_SEP));
       const sup = node('span', 'mk', m.mark);
       sup.dataset.cv = String(m.index);
       sup.title = `${m.caveat.source}: ${m.caveat.text.slice(0, 180)}…`;
@@ -369,7 +382,7 @@ class MarkerIndex {
       target.dataset.cv = target.dataset.cv
         ? `${target.dataset.cv} ${m.index}`
         : String(m.index);
-    }
+    });
   }
 
   has(field) { return this.byField.has(field); }

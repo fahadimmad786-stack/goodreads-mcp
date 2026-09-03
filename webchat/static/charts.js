@@ -93,6 +93,32 @@ function truncate(text, max) {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }
 
+/* --- a scale that can hold negative values --------------------------------
+ *
+ * A bar chart drawn from `v / max` renders nothing at all for a negative
+ * value: the width is negative, so the rect collapses and the row reads as
+ * missing rather than as a fall. Scaling |v| instead would be worse -- a drop
+ * would draw the same bar as a rise of the same size.
+ *
+ * So a series with any negative value gets a zero line and a domain that is
+ * symmetric about it, [-M, +M] for M the largest absolute value. Bars run one
+ * way for positive and the other for negative, and equal magnitudes draw
+ * equal bars whichever side they fall. An all-positive series keeps the plain
+ * scale anchored at the edge: there is nothing to divide it around, and
+ * halving the plot for an empty negative side would only shrink every bar.
+ */
+function signedScale(values) {
+  const nums = values.map((v) => Number(v) || 0);
+  return {
+    signed: nums.some((v) => v < 0),
+    max: Math.max(...nums.map(Math.abs), 0) || 1,
+  };
+}
+
+const SIGNED_NOTE = ' Values are signed: the bars run from a zero line, '
+  + 'negative one way and positive the other, scaled symmetrically to the '
+  + 'largest absolute value.';
+
 /* --- horizontal bars: rankings ------------------------------------------
  * No value axis and no ticks. Each bar is labelled with its exact value, so
  * there is nothing to read off a scale and nothing rounded on screen.
@@ -103,33 +129,50 @@ export function hbars({ rows, cat, value, unit, extra, desc }) {
   const gap = 2;               /* surface gap between adjacent bars */
   const gutter = 232;
   const rightPad = 132;
+  const labelPad = 84;         /* room for the label at a leftward bar's end */
   const H = rows.length * (rowH + gap) + 8;
-  const plot = W - gutter - rightPad;
-  const max = Math.max(...rows.map((r) => Number(r[value]) || 0), 0) || 1;
+  const { signed, max } = signedScale(rows.map((r) => r[value]));
+  /* Signed: the label of the longest negative bar has to land clear of the
+   * category names, so the plot starts a label's width in from the gutter. */
+  const left = gutter + (signed ? labelPad : 0);
+  const plot = W - rightPad - left;
+  const reach = signed ? plot / 2 : plot;   /* the longest a bar can draw */
+  const zero = signed ? left + reach : left;
 
   const svg = svgRoot(W, H);
+  if (signed) {
+    svg.appendChild(el('line', { x1: zero, y1: 0, x2: zero, y2: H, class: 'axis zero' }));
+  }
+
   rows.forEach((r, i) => {
     const y = i * (rowH + gap) + 4;
     const v = Number(r[value]) || 0;
-    const w = Math.max((v / max) * plot, v > 0 ? 2 : 0);
+    const w = Math.max((Math.abs(v) / max) * reach, v !== 0 ? 2 : 0);
+    const x = v < 0 ? zero - w : zero;
 
     svg.appendChild(el('text', {
       x: gutter - 10, y: y + rowH * 0.72, class: 'cat', 'text-anchor': 'end',
     }, truncate(r[cat], 34)));
 
     const bar = el('rect', {
-      x: gutter, y, width: w, height: rowH, rx: 3,
+      x, y, width: w, height: rowH, rx: 3,
       class: r.__flagged ? 'bar flagged' : 'bar',
     });
     attachTip(bar, tipHtml(r, cat, value, unit, extra));
     svg.appendChild(bar);
 
+    /* Always at the free end of the bar, so the number never sits over the
+     * fill and never crosses the zero line. */
     svg.appendChild(el('text', {
-      x: gutter + w + 8, y: y + rowH * 0.72, class: 'value',
+      x: v < 0 ? x - 8 : x + w + 8,
+      y: y + rowH * 0.72,
+      class: 'value',
+      'text-anchor': v < 0 ? 'end' : 'start',
     }, fmt(v)));
   });
-  return describe(svg, desc
-    || `Bar chart: ${unit || value} by ${cat}, ${rows.length} bars.`);
+  return describe(svg, (desc
+    || `Bar chart: ${unit || value} by ${cat}, ${rows.length} bars.`)
+    + (signed ? SIGNED_NOTE : ''));
 }
 
 /* --- vertical bars: histograms, months, bands --------------------------- */
@@ -145,16 +188,24 @@ export function vbars({ rows, cat, value, unit, extra, rotate, desc }) {
   const n = rows.length || 1;
   const slot = plotW / n;
   const barW = Math.max(slot - 3, 2);
-  const max = Math.max(...rows.map((r) => Number(r[value]) || 0), 0) || 1;
+  const { signed, max } = signedScale(rows.map((r) => r[value]));
+  /* Signed: zero sits mid-plot and each half keeps a label's height clear, so
+   * the longest bar's own value never runs off the plot or into the
+   * category labels below it. */
+  const labelPad = 14;
+  const zeroY = signed ? top + plotH / 2 : top + plotH;
+  const reach = signed ? plotH / 2 - labelPad : plotH;
 
   const svg = svgRoot(W, H);
-  svg.appendChild(el('line', { x1: left, y1: top + plotH, x2: W - right, y2: top + plotH, class: 'axis' }));
+  svg.appendChild(el('line', {
+    x1: left, y1: zeroY, x2: W - right, y2: zeroY, class: signed ? 'axis zero' : 'axis',
+  }));
 
   rows.forEach((r, i) => {
     const v = Number(r[value]) || 0;
-    const h = Math.max((v / max) * plotH, v > 0 ? 2 : 0);
+    const h = Math.max((Math.abs(v) / max) * reach, v !== 0 ? 2 : 0);
     const x = left + i * slot + (slot - barW) / 2;
-    const y = top + plotH - h;
+    const y = v < 0 ? zeroY : zeroY - h;
 
     const bar = el('rect', {
       x, y, width: barW, height: h, rx: 3,
@@ -164,7 +215,7 @@ export function vbars({ rows, cat, value, unit, extra, rotate, desc }) {
     svg.appendChild(bar);
 
     svg.appendChild(el('text', {
-      x: x + barW / 2, y: y - 6, class: 'value', 'text-anchor': 'middle',
+      x: x + barW / 2, y: v < 0 ? y + h + 12 : y - 6, class: 'value', 'text-anchor': 'middle',
     }, fmt(v)));
 
     const label = el('text', {
@@ -175,8 +226,9 @@ export function vbars({ rows, cat, value, unit, extra, rotate, desc }) {
     }
     svg.appendChild(label);
   });
-  return describe(svg, desc
-    || `Bar chart: ${unit || value} by ${cat}, ${rows.length} bars.`);
+  return describe(svg, (desc
+    || `Bar chart: ${unit || value} by ${cat}, ${rows.length} bars.`)
+    + (signed ? SIGNED_NOTE : ''));
 }
 
 /* --- line: one measure over publication year ---------------------------
@@ -215,6 +267,15 @@ export function lineSeries({ rows, x, y, unit, extra, desc }) {
     const gy = py(v);
     svg.appendChild(el('line', { x1: m.l, y1: gy, x2: W - m.r, y2: gy, class: 'grid' }));
     svg.appendChild(el('text', { x: m.l - 8, y: gy + 3.5, 'text-anchor': 'end' }, compact.format(v)));
+  }
+
+  /* A line can cross zero where a bar cannot: the ticks alone would leave the
+   * sign of a dip to arithmetic, so zero gets its own rule when it is inside
+   * the domain. */
+  if (yLo < 0 && yHi > 0) {
+    svg.appendChild(el('line', {
+      x1: m.l, y1: py(0), x2: W - m.r, y2: py(0), class: 'axis zero',
+    }));
   }
 
   svg.appendChild(el('path', {

@@ -747,6 +747,12 @@ tr.flagged td:first-child::after {
   cursor: help;
   margin-left: 1px;
 }
+/* Two markers on one field, separated: 2,3 is two caveats, 23 would be one.
+   The comma carries no caveat of its own, so it is not a hover target. */
+.mk.sep {
+  margin-left: 0;
+  cursor: default;
+}
 th.hl, td.hl { background: var(--accent-soft); }
 
 /* --- the n / unit / threshold block --------------------------------------
@@ -895,6 +901,9 @@ details.query pre.sql { margin-top: var(--s1); background: var(--surface); }
 }
 .chart .marker { fill: var(--accent); stroke: var(--surface); stroke-width: 2; }
 .chart .axis { stroke: var(--edge); stroke-width: 1; }
+/* Zero, on a chart whose values are signed: the line every bar is measured
+   from, so it reads a shade stronger than a plain baseline. */
+.chart .zero { stroke: var(--ink-3); stroke-width: 1; }
 .chart .grid { stroke: var(--rule); stroke-width: 1; }
 .chart .crosshair { stroke: var(--rule-2); stroke-width: 1; stroke-dasharray: 2 2; }
 .chart .hit { fill: transparent; }

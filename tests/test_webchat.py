@@ -1739,3 +1739,162 @@ def test_a_frame_from_a_real_envelope_shape_carries_its_statements(schemas):
     frame = frames._result_frame("c", outcome)
     assert frame["envelope"]["query_meta"]["statements"][0]["params"] == {"min_ratings": 100}
     assert "@min_ratings" in frame["envelope"]["query_meta"]["statements"][0]["sql"]
+
+
+# --- the charts and the cards, actually drawn ------------------------------
+#
+# Everything above reads webchat/static/*.js as text, which settles "does this
+# call site pass a description" but cannot settle "does a bar with a negative
+# value draw at all" -- that is geometry, and only running the code answers it.
+# tests/render_probe.mjs supplies the small DOM the two modules touch, draws
+# the figures and prints the coordinates; the assertions stay here.
+
+
+@pytest.fixture(scope="module")
+def drawn():
+    """The charts and one card, drawn by their own code under node."""
+    node = shutil.which("node")
+    if node is None:  # pragma: no cover - depends on the machine, not the code
+        pytest.skip("node is needed to run the console's own chart code")
+    probe = pathlib.Path(__file__).resolve().parent / "render_probe.mjs"
+    run = subprocess.run(
+        [node, str(probe)], capture_output=True, text=True, timeout=120, check=False,
+    )
+    assert run.returncode == 0, run.stderr
+    return json.loads(run.stdout)
+
+
+def _pairs(chart, series):
+    """Each input value beside the bar and the label it drew."""
+    return list(zip([r["v"] for r in series], chart["bars"], chart["values"], strict=True))
+
+
+@pytest.mark.parametrize("chart", ["hbars_signed", "vbars_signed"])
+def test_a_negative_value_draws_a_bar_the_other_side_of_a_zero_line(drawn, chart):
+    """
+    The bug this pins: `width = v / max * plot` is negative for a negative
+    value, so the rect collapses and the row reads as missing rather than as a
+    fall. compare_user_vs_book_ratings returns 24 negative divergences and one
+    positive; before the fix exactly one bar was drawn.
+    """
+    fig = drawn[chart]
+    zero = fig["zero_at"]
+    assert fig["zero_lines"] == 1, "a signed series must be drawn against a zero line"
+
+    # Which way the screen coordinate runs for a positive value: rightwards
+    # along x for horizontal bars, upwards -- so downwards in y -- for vertical.
+    rising = 1 if chart.startswith("hbars") else -1
+
+    directions = set()
+    for value, bar, _label in _pairs(fig, drawn["series"]["signed"]):
+        if value == 0:
+            continue
+        assert bar["size"] > 0, f"{value} drew no bar"
+        ends = (bar["pos"], bar["end"])
+        assert min(ends) == pytest.approx(zero) or max(ends) == pytest.approx(zero), \
+            f"{value} does not start at the zero line"
+        free = bar["end"] if bar["pos"] == pytest.approx(zero) else bar["pos"]
+        drew = 1 if free > zero else -1
+        want = rising if value > 0 else -rising
+        assert drew == want, f"{value} drew on the wrong side of zero"
+        directions.add("positive" if value > 0 else "negative")
+    assert directions == {"negative", "positive"}, "only one direction rendered"
+
+
+@pytest.mark.parametrize("chart", ["hbars_signed", "vbars_signed"])
+def test_the_signed_scale_is_symmetric_about_zero(drawn, chart):
+    """
+    Equal magnitudes draw equal bars whichever side of zero they fall on, so
+    -1.2 is visibly four times -0.3 and twice 0.6. A per-side scale would make
+    the largest fall and the largest rise the same length.
+    """
+    per_unit = {
+        value: bar["size"] / abs(value)
+        for value, bar, _ in _pairs(drawn[chart], drawn["series"]["signed"])
+        if value != 0
+    }
+    assert len(set(round(v, 6) for v in per_unit.values())) == 1, per_unit
+
+
+def test_a_signed_chart_says_so_in_its_label(drawn):
+    """
+    The chart is role="img": one node to a screen reader, so the label has to
+    carry the zero line too, or the reading is of magnitudes with no signs.
+    """
+    for chart in ("hbars_signed", "vbars_signed"):
+        assert "zero line" in drawn[chart]["label"]
+    for chart in ("hbars_positive", "vbars_positive"):
+        assert "zero line" not in drawn[chart]["label"]
+
+
+@pytest.mark.parametrize("chart", ["hbars_positive", "vbars_positive"])
+def test_an_all_positive_series_keeps_the_full_width_scale(drawn, chart):
+    """
+    The signed treatment must not cost the ordinary case half its plot: with
+    nothing below zero there is nothing to divide the plot around, so the bars
+    stay anchored at the edge and the largest fills the plot.
+    """
+    fig = drawn[chart]
+    assert fig["zero_lines"] == 0
+    edges = {bar["end"] if chart.startswith("v") else bar["pos"] for bar in fig["bars"]}
+    assert len(edges) == 1, "positive bars should all start from the same baseline"
+    sizes = [bar["size"] for bar in fig["bars"]]
+    assert max(sizes) > 3 * min(sizes), "the largest bar should still fill the plot"
+
+
+def test_a_value_label_sits_at_the_free_end_of_its_bar(drawn):
+    """A number over the fill, or across the zero line, would be unreadable."""
+    for value, bar, label in _pairs(drawn["hbars_signed"], drawn["series"]["signed"]):
+        if value < 0:
+            assert label["anchor"] == "end" and label["x"] <= bar["pos"]
+        else:
+            assert label["anchor"] == "start" and label["x"] >= bar["end"]
+
+    fig = drawn["vbars_signed"]
+    for value, bar, label in _pairs(fig, drawn["series"]["signed"]):
+        if value < 0:
+            assert label["y"] > bar["end"], "a downward bar's label belongs below it"
+        else:
+            assert label["y"] < bar["pos"], "an upward bar's label belongs above it"
+
+
+def test_the_line_chart_rules_zero_when_its_values_cross_it():
+    """
+    lineSeries scales to its own min and max, so a negative value does render
+    -- but with only compact ticks to read it against, the sign of a dip is
+    left to arithmetic. Zero gets a rule when it is inside the domain.
+    """
+    charts = _strip_comments((STATIC / "charts.js").read_text(encoding="utf-8"))
+    assert "if (yLo < 0 && yHi > 0) {" in charts
+    assert "class: 'axis zero'" in charts
+
+
+def test_two_caveats_on_one_field_are_separated_so_they_cannot_read_as_one(drawn):
+    """
+    Two markers set side by side read as one number: a field carrying caveats
+    2 and 3 said "caveat 23", which is a different caveat and, past ten
+    registered caveats, an existing one. The separator goes in wherever
+    markers land -- headers, cells and the grounds block all decorate through
+    the same function -- and the caveat list below carries the same glyph.
+    """
+    m = drawn["markers"]
+    pooled = [h for h in m["headers"] if h.startswith("pooled_rating")]
+    assert pooled == ["pooled_rating1,2"], m["headers"]
+    assert any(c.endswith("1,2") for c in m["cells"]), m["cells"]
+    assert any("1,2" in g for g in m["grounds"]), m["grounds"]
+    # Never the run-together form, anywhere on the card.
+    assert not any("12" in place for place in m["headers"] + m["cells"])
+    # One separator per adjacent pair, and the list still marks each caveat once.
+    assert m["separators"] == [",", ",", ","]
+    assert m["caveat_marks"] == ["1", "2", "3"]
+
+
+def test_the_separator_is_written_once_and_styled_where_markers_land():
+    """
+    A call site that wrote its own separator would drift from the others, so
+    the marker run is built in one place and the style follows the class.
+    """
+    cards = _strip_comments((STATIC / "cards.js").read_text(encoding="utf-8"))
+    assert cards.count("MARKER_SEP") == 2, "the separator is declared once and used once"
+    assert "node('span', 'mk sep', MARKER_SEP)" in cards
+    assert ".mk.sep" in _rules_only(APP_CSS)

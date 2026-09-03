@@ -18,7 +18,8 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
 gcloud auth application-default login          # BigQuery uses ADC
 
 # Tests
-.venv/bin/python -m pytest tests/ -q           # ~190 offline invariant tests, no network
+.venv/bin/python -m pytest tests/ -q           # ~200 offline invariant tests, no network
+node tests/render_probe.mjs                    # what the drawn-figure tests assert on, as JSON
 .venv/bin/python -m pytest tests/test_guards.py::test_work_key_preserves_ranges_and_drops_volume_numbers -q
 .venv/bin/python tests/smoke_live.py           # 18 live calls + a cache-miss probe, needs ADC
 
@@ -113,6 +114,9 @@ The organising idea: **the dataset's defects are handled structurally, not by do
   - **Four views, one scroller, one rail.** Overview (chat lives here), Tools, Defects and Telemetry are panels of a vertical tablist in the rail; `app.js` switches `body[data-view]` and each view initialises itself once, on first show. Overview and Defects share one cached `dataset_overview` call through `data.js` so its three queries are not billed twice. `defects.js` addresses the envelope by dotted path in its `LIVE` map; the column-name scan covers it, so a renamed server field fails a test rather than rendering a dash.
   - **Two faces, by job.** Prose is the sans, data is the mono, and the mono is applied by one shared selector list near the top of `app.css`. A test asserts the body is set in `--sans` and that no third face appears.
   - **Telemetry is the CLI's code behind a route.** `/api/telemetry` calls `telemetry_cli.load()`, `summarise()` and `pct()` and adds only the scope label and the path. It is labelled local-session; the console holds no Cloud Logging credential and must not grow one.
+  - **Charts are drawn, not just described, by one group of tests.** Everything else in `tests/test_webchat.py` reads `webchat/static/*.js` as text, which cannot answer "does a bar with a negative value draw at all". `tests/render_probe.mjs` supplies the small DOM `charts.js` and `cards.js` touch, runs them under node and prints the coordinates; the assertions stay in pytest, and the whole group skips if node is absent. Run the probe directly to see what they read.
+  - **A signed series gets a zero line, and only a signed series.** `v / max * plot` is negative for a negative value, so the rect collapses and the row reads as missing rather than as a fall — which is what `compare_user_vs_book_ratings` did, drawing 1 of its 25 bars. `signedScale()` in `charts.js` decides: any negative value and the domain becomes symmetric, `[-M, +M]` for M the largest absolute value, with bars running either side of a rule and the value label at the free end. All-positive data keeps the full-width scale anchored at the edge — halving the plot for an empty negative side would shrink every bar for nothing. `divergence` is the only signed column the twelve tools return, but the treatment is in the chart, not in the caller.
+  - **Two caveat markers on one field are separated.** `²³` reads as caveat 23 — a different caveat, and once the registry passes ten, an existing one. `MarkerIndex.decorate()` puts a superscript comma between consecutive markers, and it is written there rather than at each call site so headers, cells and the grounds block separate identically.
   - **`query_meta.statements` is the SQL inspector's source.** `bq.run()` attaches `sql` and `params` to each job's meta and `merge_meta()` carries them; a card shows the disclosure only when the field is present, so a server built before it simply shows none.
 
 - **Several tests assert on source text** via `inspect.getsource(server)`. Renaming a helper or reformatting a `caveats.collect(...)` call can fail a test without changing behaviour. That is intentional — it is how "every tool reporting `pooled_rating` states the duplication caveat" is enforced — but expect it during refactors.
