@@ -1898,3 +1898,119 @@ def test_the_separator_is_written_once_and_styled_where_markers_land():
     assert cards.count("MARKER_SEP") == 2, "the separator is declared once and used once"
     assert "node('span', 'mk sep', MARKER_SEP)" in cards
     assert ".mk.sep" in _rules_only(APP_CSS)
+
+
+# --- the category gutter ---------------------------------------------------
+#
+# An SVG clips at its viewBox, so a label wider than the gutter loses its
+# leading characters instead of overflowing. The widths below are the ones
+# Chromium actually lays out for the chart's own text style -- JetBrains Mono
+# at 11.5px, measured with getComputedTextLength: every character is 7.0 user
+# units, and the ellipsis 8.0. charts.js estimates with a rounded-up advance
+# so its gutter is always a little generous; these are the true widths, so a
+# test using them fails if the estimate ever undershoots.
+
+CAT_INK = 7.0
+ELLIPSIS_INK = 8.0
+
+
+def _ink(text: str) -> float:
+    """How wide `text` really draws, in viewBox units."""
+    return sum(ELLIPSIS_INK if c == "…" else CAT_INK for c in text)
+
+
+def _hbars(drawn):
+    return {name: fig for name, fig in drawn.items() if name.startswith("hbars")}
+
+
+def test_no_category_label_is_cut_off_at_the_chart_edge(drawn):
+    """
+    The defect: the gutter was a fixed 232 units and `City of Ashes (The
+    Mortal Instruments #2)` needs 280, so it drew from x=-30 and arrived as
+    `ity of Ashes (The Mortal Instrum…` -- a different book. The labels are
+    anchored `end`, so their left edge is the anchor minus their width, and it
+    has to stay inside the viewBox.
+    """
+    for name, fig in _hbars(drawn).items():
+        for label in fig["cats"]:
+            assert label["anchor"] == "end", name
+            left = label["x"] - _ink(label["text"])
+            assert left >= 0, f"{name}: {label['text']!r} starts at {left}, outside the chart"
+
+
+def test_the_gutter_grows_to_fit_the_longest_label(drawn):
+    """
+    Sized to the labels the chart has, not fixed: a 40-character title gets a
+    gutter the old fixed one could not have held, and every row shares it, so
+    the labels still align down one edge.
+    """
+    long_fig = drawn["hbars_long"]
+    anchors = {label["x"] for label in long_fig["cats"]}
+    assert len(anchors) == 1, "labels should share one right edge"
+    assert anchors.pop() > 232, "the gutter did not grow past the old fixed one"
+
+    shown = [label["text"] for label in long_fig["cats"]]
+    verbatim = [r["cat"] for r in drawn["series"]["long"] if r["cat"] in shown]
+    # The old gutter truncated at 34 characters, and held 31 without clipping.
+    assert max(len(t) for t in verbatim) > 34, \
+        "a title that fits the cap must be drawn whole"
+
+
+def test_the_gutter_shrinks_for_short_labels_rather_than_holding_space(drawn):
+    """Three-letter language codes should not reserve a title's worth of gutter."""
+    short = drawn["hbars_short"]["cats"][0]["x"]
+    assert short < drawn["hbars_long"]["cats"][0]["x"]
+    # But not to nothing: a floor keeps one chart looking like the next.
+    assert short >= 100
+
+
+def test_a_label_past_the_cap_truncates_and_keeps_its_full_text_for_hover(drawn):
+    """
+    Past the cap the chart would be mostly text, so the label truncates -- at
+    a real ellipsis, with the whole string in a <title> so a pointer can still
+    read it. The table under every chart carries it untruncated regardless.
+    """
+    by_text = drawn["hbars_long"]["cats"]
+    cut = [label for label in by_text if label["title"] is not None]
+    assert len(cut) == 1, "only the label past the cap should be truncated"
+    assert cut[0]["text"].endswith("…"), "truncation must use a real ellipsis"
+    assert "..." not in cut[0]["text"], "three dots is not an ellipsis"
+    full = max((r["cat"] for r in drawn["series"]["long"]), key=len)
+    assert cut[0]["title"] == full, "the <title> must carry the whole label"
+    # And an untruncated label carries no title, so hover means "there is more".
+    assert all(label["title"] is None for label in by_text if not label["text"].endswith("…"))
+
+
+def test_the_gutter_cap_leaves_the_bars_room(drawn):
+    """
+    A gutter with no cap would let one long title squeeze the bars to nothing.
+    The cap is what stops that, so it is worth asserting the bars still get
+    the larger share of the width.
+    """
+    fig = drawn["hbars_long"]
+    gutter = fig["cats"][0]["x"]
+    longest = max(bar["size"] for bar in fig["bars"])
+    assert gutter <= 340
+    assert longest > gutter, "the bars should still outweigh the labels"
+
+
+def test_the_size_the_charts_measure_with_is_the_size_the_stylesheet_sets():
+    """
+    charts.js sizes the gutter arithmetically, so its idea of the label font
+    has to be the stylesheet's. A change to --t-meta with no change here would
+    silently start clipping again.
+    """
+    charts = (STATIC / "charts.js").read_text(encoding="utf-8")
+    declared = float(re.search(r"const CAT_SIZE = ([\d.]+);", charts).group(1))
+    token = float(re.search(r"--t-meta:\s*([\d.]+)px", APP_CSS).group(1))
+    assert declared == token, f"charts.js measures at {declared}px, --t-meta is {token}px"
+
+    # And the advance it assumes must be no smaller than the real one, or the
+    # estimate undershoots and the gutter comes up short.
+    advance = float(re.search(r"const CAT_ADVANCE = ([\d.]+);", charts).group(1))
+    assert advance >= CAT_INK / token, "the assumed advance is narrower than the face's"
+
+    # The label rule really is the mono, which is what makes one advance per
+    # character true at all.
+    rule = re.search(r"\.chart text \{([^}]*)\}", APP_CSS).group(1)
+    assert "var(--t-meta)" in rule and "var(--mono)" in rule

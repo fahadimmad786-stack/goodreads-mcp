@@ -119,6 +119,43 @@ const SIGNED_NOTE = ' Values are signed: the bars run from a zero line, '
   + 'negative one way and positive the other, scaled symmetrically to the '
   + 'largest absolute value.';
 
+/* --- the category gutter -------------------------------------------------
+ *
+ * An SVG clips at its viewBox, so a label wider than the gutter loses its
+ * first characters rather than overflowing: `City of Ashes (The Mortal
+ * Instruments #2)` arrived as `ity of Ashes (The Mortal Instrum…`, which
+ * reads as a different book. A fixed gutter cannot be right for both a
+ * language code and a boxed-set title, so it is measured from the labels the
+ * chart actually has.
+ *
+ * Measured arithmetically, not by asking the browser: these labels are set in
+ * the mono, where every character is one advance wide, and the chart is built
+ * off-DOM so there is nothing to call getComputedTextLength on yet. The
+ * advance is rounded up from the measured one, which makes every estimate an
+ * over-estimate -- a gutter a hair too wide costs nothing, a gutter a hair
+ * too narrow is the bug again.
+ *
+ * The cap is where a title stops paying for itself: past it the chart is
+ * mostly text and the bars have nowhere left to go, so the label truncates at
+ * an ellipsis and carries its full text in a <title> for hover. The floor
+ * keeps a chart of three-letter language codes from looking like a different
+ * component.
+ */
+const CAT_SIZE = 11.5;       /* --t-meta; a test pins this to the stylesheet */
+const CAT_ADVANCE = 0.63;    /* JetBrains Mono measures 0.609em here, rounded up */
+const CAT_PAD = 10;          /* the gap the label keeps from the bars */
+const CAT_MIN = 140;
+const CAT_MAX = 340;
+const CAT_CHAR = CAT_SIZE * CAT_ADVANCE;
+
+function catGutter(labels) {
+  const widest = Math.max(...labels.map((s) => s.length * CAT_CHAR), 0);
+  const gutter = Math.ceil(Math.min(Math.max(widest + CAT_PAD, CAT_MIN), CAT_MAX));
+  /* What fits in the gutter it settled on -- the cap's truncation length,
+   * derived from the same arithmetic rather than guessed alongside it. */
+  return { gutter, fits: Math.floor((gutter - CAT_PAD) / CAT_CHAR) };
+}
+
 /* --- horizontal bars: rankings ------------------------------------------
  * No value axis and no ticks. Each bar is labelled with its exact value, so
  * there is nothing to read off a scale and nothing rounded on screen.
@@ -127,7 +164,8 @@ export function hbars({ rows, cat, value, unit, extra, desc }) {
   const W = 900;
   const rowH = 20;
   const gap = 2;               /* surface gap between adjacent bars */
-  const gutter = 232;
+  const labels = rows.map((r) => String(r[cat] ?? ''));
+  const { gutter, fits } = catGutter(labels);
   const rightPad = 132;
   const labelPad = 84;         /* room for the label at a leftward bar's end */
   const H = rows.length * (rowH + gap) + 8;
@@ -150,9 +188,16 @@ export function hbars({ rows, cat, value, unit, extra, desc }) {
     const w = Math.max((Math.abs(v) / max) * reach, v !== 0 ? 2 : 0);
     const x = v < 0 ? zero - w : zero;
 
-    svg.appendChild(el('text', {
-      x: gutter - 10, y: y + rowH * 0.72, class: 'cat', 'text-anchor': 'end',
-    }, truncate(r[cat], 34)));
+    /* Truncated only where the cap bit. The <title> is a pointer tooltip;
+     * the chart is role="img", so its children say nothing to a screen
+     * reader -- what the figure holds is in the aria-label and, exactly, in
+     * the table below it. */
+    const shown = truncate(labels[i], fits);
+    const label = el('text', {
+      x: gutter - CAT_PAD, y: y + rowH * 0.72, class: 'cat', 'text-anchor': 'end',
+    }, shown);
+    if (shown !== labels[i]) label.appendChild(el('title', {}, labels[i]));
+    svg.appendChild(label);
 
     const bar = el('rect', {
       x, y, width: w, height: rowH, rx: 3,

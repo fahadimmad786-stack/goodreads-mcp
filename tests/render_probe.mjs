@@ -109,10 +109,25 @@ function readChart(svg, sizeAttr, posAttr) {
       y: num(t, 'y'),
       anchor: t.getAttribute('text-anchor'),
     }));
+  /* A category label as drawn: the text that renders, where its anchor sits,
+   * and the <title> a truncated one carries. `textContent` would swallow the
+   * title, which is a descriptive element and never rendered, so the two are
+   * read apart. */
+  const cats = svg.querySelectorAll('text')
+    .filter((t) => cls(t).includes('cat'))
+    .map((t) => ({
+      text: t.children.filter((c) => c instanceof Txt).map((c) => c.textContent).join(''),
+      x: num(t, 'x'),
+      anchor: t.getAttribute('text-anchor'),
+      title: (t.children.find((c) => c instanceof El && c.tagName === 'title') || {}).textContent
+        ?? null,
+    }));
   return {
     label: svg.getAttribute('aria-label'),
+    view_box: svg.getAttribute('viewBox'),
     bars,
     values,
+    cats,
     zero_lines: zero.length,
     zero_at: zero.length ? num(zero[0], posAttr === 'x' ? 'x1' : 'y1') : null,
   };
@@ -130,8 +145,21 @@ const POSITIVE = [
   { cat: 'fewer', v: 5 },
   { cat: 'fewest', v: 1 },
 ];
+/* Labels around the gutter's old fixed 232 units: the title that arrived
+ * clipped, one past any sensible cap, and a short one to prove the gutter is
+ * sized to the longest and not to each row. */
+const LONG = [
+  { cat: 'City of Ashes (The Mortal Instruments #2)', v: 9 },
+  { cat: 'Harry Potter and the Order of the Phoenix (Harry Potter #5, Special Edition)', v: 6 },
+  { cat: 'Dear John', v: 3 },
+];
+const SHORT = [
+  { cat: 'eng', v: 900 },
+  { cat: 'spa', v: 120 },
+  { cat: 'fre', v: 80 },
+];
 
-const out = { series: { signed: SIGNED, positive: POSITIVE } };
+const out = { series: { signed: SIGNED, positive: POSITIVE, long: LONG, short: SHORT } };
 
 out.hbars_signed = readChart(
   charts.hbars({ rows: SIGNED, cat: 'cat', value: 'v', unit: 'divergence', desc: 'Bar chart: divergence.' }),
@@ -139,6 +167,14 @@ out.hbars_signed = readChart(
 );
 out.hbars_positive = readChart(
   charts.hbars({ rows: POSITIVE, cat: 'cat', value: 'v', unit: 'n_books', desc: 'Bar chart: n_books.' }),
+  'width', 'x',
+);
+out.hbars_long = readChart(
+  charts.hbars({ rows: LONG, cat: 'cat', value: 'v', unit: 'n_ratings', desc: 'Bar chart: n_ratings.' }),
+  'width', 'x',
+);
+out.hbars_short = readChart(
+  charts.hbars({ rows: SHORT, cat: 'cat', value: 'v', unit: 'n_books', desc: 'Bar chart: n_books.' }),
   'width', 'x',
 );
 out.vbars_signed = readChart(
