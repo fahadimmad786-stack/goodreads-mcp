@@ -11,7 +11,8 @@
 #
 #   * this service's SA gets roles/run.invoker on goodreads-mcp -- the only new
 #     access to the private service;
-#   * this service's SA gets roles/secretmanager.secretAccessor on one secret;
+#   * this service's SA gets roles/secretmanager.secretAccessor on each secret
+#     that exists -- the access token, and whichever model keys were supplied;
 #   * a SEPARATE build SA gets roles/cloudbuild.builds.builder on the project.
 #     That is the only project-level binding, it belongs to an identity that
 #     never runs the service, and it exists because the alternative is the
@@ -67,6 +68,14 @@ IMAGE="${IMAGE:-${REGION}-docker.pkg.dev/${PROJECT}/${REPO}/${SERVICE}:latest}"
 # entirely if neither exists, which deploys the console in tool mode only: the
 # forms, the cards and the guard probe, with no model and no Anthropic account.
 KEY_SECRET="${KEY_SECRET:-anthropic-api-key}"
+# Secret Manager secret holding the Google AI Studio key. Same rules: created
+# from $GEMINI_API_KEY on first run, skipped entirely if neither exists. Either
+# key alone is enough for chat mode; AI Studio's free tier is the reason this
+# one is worth having, since it needs no paid credits.
+GEMINI_KEY_SECRET="${GEMINI_KEY_SECRET:-gemini-api-key}"
+# Which provider wins when BOTH secrets exist. Left empty the console defaults
+# to anthropic, matching config.py -- set CHAT_PROVIDER=gemini to pick the other.
+CHAT_PROVIDER="${CHAT_PROVIDER:-}"
 # Secret Manager secret holding the console's shared access token. Generated on
 # first run if absent -- the console refuses to start without one.
 ACCESS_SECRET="${ACCESS_SECRET:-chat-access-token}"
@@ -190,18 +199,39 @@ ensure_secret() {   # name, value
     --condition=None >/dev/null
 }
 
-# The key is optional, so a missing one is a mode choice rather than an error.
-# It is only mounted if the secret actually exists: --set-secrets naming an
-# absent secret fails the deploy, and mounting an empty one would leave the
-# console claiming a chat mode that 500s on every turn.
-CHAT_MODE="chat and tool modes"
-KEY_MOUNT="ANTHROPIC_API_KEY=${KEY_SECRET}:latest,"
-if ! ensure_secret "${KEY_SECRET}" "${ANTHROPIC_API_KEY:-}"; then
+# Both model keys are optional, so missing ones are a mode choice rather than an
+# error. A key is only mounted if its secret actually exists: --set-secrets
+# naming an absent secret fails the deploy, and mounting an empty one would
+# leave the console claiming a chat mode that 500s on every turn.
+KEY_MOUNT=""
+PROVIDERS=""
+
+if ensure_secret "${KEY_SECRET}" "${ANTHROPIC_API_KEY:-}"; then
+  KEY_MOUNT="${KEY_MOUNT}ANTHROPIC_API_KEY=${KEY_SECRET}:latest,"
+  PROVIDERS="anthropic"
+fi
+if ensure_secret "${GEMINI_KEY_SECRET}" "${GEMINI_API_KEY:-}"; then
+  KEY_MOUNT="${KEY_MOUNT}GEMINI_API_KEY=${GEMINI_KEY_SECRET}:latest,"
+  PROVIDERS="${PROVIDERS:+${PROVIDERS} and }gemini"
+fi
+
+if [ -z "${KEY_MOUNT}" ]; then
   CHAT_MODE="tool mode only"
-  KEY_MOUNT=""
-  echo "no ${KEY_SECRET} secret and no ANTHROPIC_API_KEY: deploying without the chat mode."
-  echo "the console still serves every tool; add the key later to turn chat on:"
+  echo "no model key secret and no ANTHROPIC_API_KEY or GEMINI_API_KEY in the"
+  echo "environment: deploying without the chat mode. The console still serves"
+  echo "every tool; add a key later to turn chat on:"
   echo "  ANTHROPIC_API_KEY=sk-ant-... ./deploy-chat.sh"
+  echo "  GEMINI_API_KEY=...        ./deploy-chat.sh   # AI Studio, free tier"
+else
+  CHAT_MODE="chat and tool modes (${PROVIDERS})"
+fi
+
+# Only sent when it was asked for. Setting it unconditionally would pin the
+# provider in the revision's env and make adding the second key later a
+# two-step change instead of one.
+PROVIDER_ENV=""
+if [ -n "${CHAT_PROVIDER}" ]; then
+  PROVIDER_ENV=",CHAT_PROVIDER=${CHAT_PROVIDER}"
 fi
 
 # Generated rather than prompted: a console with no access token would be an
@@ -240,7 +270,7 @@ gcloud builds submit \
 # --allow-unauthenticated is load-bearing and is the reason this is a separate
 #   service: browsers carry no Google identity. Access control is the shared
 #   token in CHAT_ACCESS_TOKEN, checked in app.py.
-# --set-secrets, never --set-env-vars, for both secrets: the values never
+# --set-secrets, never --set-env-vars, for every secret: the values never
 #   appear in the revision's env, in `gcloud run services describe`, or in the
 #   image.
 
@@ -259,7 +289,7 @@ gcloud run deploy "${SERVICE}" \
   --session-affinity \
   --timeout 600 \
   --port 8080 \
-  --set-env-vars "GOODREADS_MCP_URL=${MCP_URL},GOODREADS_MCP_AUDIENCE=${MCP_AUDIENCE},CHAT_MAX_TOOL_CALLS=${CHAT_MAX_TOOL_CALLS},CHAT_MAX_TURNS=${CHAT_MAX_TURNS},CHAT_RATE_LIMIT_TURNS=${CHAT_RATE_LIMIT_TURNS},CHAT_RATE_LIMIT_WINDOW=${CHAT_RATE_LIMIT_WINDOW},CHAT_TOOL_RATE_LIMIT_CALLS=${CHAT_TOOL_RATE_LIMIT_CALLS}" \
+  --set-env-vars "GOODREADS_MCP_URL=${MCP_URL},GOODREADS_MCP_AUDIENCE=${MCP_AUDIENCE},CHAT_MAX_TOOL_CALLS=${CHAT_MAX_TOOL_CALLS},CHAT_MAX_TURNS=${CHAT_MAX_TURNS},CHAT_RATE_LIMIT_TURNS=${CHAT_RATE_LIMIT_TURNS},CHAT_RATE_LIMIT_WINDOW=${CHAT_RATE_LIMIT_WINDOW},CHAT_TOOL_RATE_LIMIT_CALLS=${CHAT_TOOL_RATE_LIMIT_CALLS}${PROVIDER_ENV}" \
   --set-secrets "${KEY_MOUNT}CHAT_ACCESS_TOKEN=${ACCESS_SECRET}:latest"
 
 # ---------------------------------------------------------------------------
