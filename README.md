@@ -528,18 +528,33 @@ Gemini's function-calling path honours. `OPENAPI_SUBSET` is read off the
 installed SDK's own `types.Schema` and pinned to it by a test, so an SDK bump
 that moves the dialect fails in the suite rather than in a deployment.
 
-**A measured model difference, kept honest.** On `gemini-3.5-flash` — the
-default — six sampled turns called `dataset_overview` before the tool that
-actually answered in five of them, spending a query the caller pays for to
-learn something the specific tool already returns. The Gemini system prompt
-carries an extra prohibition for that reason. A balanced A/B across
-`gemini-3.6-flash` and `gemini-3.7-flash` then came back **0/6 with the
-prohibition and 0/6 without**: neither newer model does this at all, so the
-test could not measure the prohibition, and the behaviour is specific to one
-model rather than to the provider. It is kept because it targets the default
-model and costs nothing elsewhere, but its effect where it matters is
-unverified. `GEMINI_MODEL=gemini-3.7-flash` avoided the behaviour outright
-with no prompt change.
+**Which Gemini model, and what overriding it picks up.** The default is
+`gemini-3.7-flash`, chosen on a measurement rather than on recency. Sampled
+turns on `gemini-3.5-flash` called `dataset_overview` before the tool that
+actually answered — spending a BigQuery query the caller pays for to learn
+what the specific tool already returns in its own caveats:
+
+| model | turns where `dataset_overview` came first |
+|---|---|
+| `gemini-3.5-flash` | **5 of 6** |
+| `gemini-3.7-flash` | **0 of 6** |
+
+So `GEMINI_MODEL=gemini-3.5-flash` still works and is still selectable, but it
+costs an extra query on most questions. That is the thing to know before
+overriding.
+
+The Gemini system prompt carries an extra prohibition against that call,
+written when the behaviour was thought to be a provider trait. A balanced A/B
+across `gemini-3.6-flash` and `gemini-3.7-flash` then returned **0/6 with the
+prohibition and 0/6 without** — neither newer model does this at all, so the
+test could not measure the prohibition and the behaviour turned out to be
+specific to one model. It is kept because it costs nothing measurable and
+`3.5-flash` remains selectable, but its effect on `3.5-flash` is unverified:
+that model's free-tier daily quota was spent before it could be re-sampled.
+
+Model ids are worth checking rather than assuming. `gemini-3-flash` does not
+exist, and `gemini-2.5-flash` is listed by `models.list()` but returns 404 for
+new keys.
 
 **A transcript belongs to the provider that wrote it.** A Gemini `Content` has
 no `tool_use` block and an Anthropic message no `functionResponse` part, so a

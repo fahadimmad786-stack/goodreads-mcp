@@ -36,13 +36,16 @@ EFFORT = os.environ.get("CHAT_EFFORT", "high")
 # would change the prose beside the cards with no revision and no log line.
 #
 # Chosen by trying them, not from documentation. "gemini-3-flash" does not
-# exist; "gemini-2.5-flash" is listed by models.list() but 404s for new keys;
-# and on the free tier the two newest flash models answered 503 UNAVAILABLE
-# ("experiencing high demand") mid-stream on every attempt, which is a bad
-# default for a console whose whole point is being able to try it. 3.5-flash
-# completed a full tool-calling turn, so that is the default and GEMINI_MODEL
-# overrides it.
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
+# exist and "gemini-2.5-flash" is listed by models.list() but 404s for new
+# keys, so a plausible-looking id is not evidence of anything.
+#
+# 3.7-flash over 3.5-flash for a measured reason: sampled turns on 3.5-flash
+# called `dataset_overview` before the tool that answered in five of six,
+# spending a BigQuery query the caller pays for to learn what the specific
+# tool already returns. 3.7-flash did it zero times in six. Both are usable
+# and 3.5-flash stays selectable here; the README states the difference so
+# overriding this is an informed choice.
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.7-flash")
 # "json_schema" hands FunctionDeclaration our schemas as they are; "openapi"
 # re-dialects them into the subset `types.Schema` can express and loses
 # `exclusiveMinimum`. The first is the default and the fallback is a config
