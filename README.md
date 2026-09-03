@@ -575,13 +575,21 @@ service cannot be both. Everything else follows from that split:
 |---|---|---|
 | ingress | `--no-allow-unauthenticated` | `--allow-unauthenticated` + shared token |
 | service account | `goodreads-mcp-run` | `goodreads-chat-run` |
+| build account | `goodreads-mcp-build` | `goodreads-chat-build` |
 | BigQuery | `roles/bigquery.jobUser` | **none** |
 | secrets | none | the access token, and an Anthropic key if chat is wanted |
 | image | root `Dockerfile` | `webchat/Dockerfile` |
 
-`deploy-chat.sh` adds exactly two IAM bindings: `roles/run.invoker` on
-`goodreads-mcp` for the console's service account, and
-`roles/secretmanager.secretAccessor` on the two secrets. It grants **no**
+`deploy-chat.sh` adds three IAM bindings. Two are the console's own:
+`roles/run.invoker` on `goodreads-mcp` for its service account, and
+`roles/secretmanager.secretAccessor` on the two secrets. The third is
+`roles/cloudbuild.builds.builder` on a *separate* `goodreads-chat-build`
+account — the only project-level binding, held by an identity that never runs
+the service. It exists because the alternative is the default compute service
+account: leaving `gcloud builds submit` to fall back to that either fails the
+build outright, on a project where it has no roles, or puts source-bucket and
+Artifact Registry access on an identity shared with everything else in the
+project. The console's runtime account grants **no**
 BigQuery role — the console reaches BigQuery only as a consequence of a guarded
 tool call running under the MCP service's identity — and no
 `iam.serviceAccountTokenCreator`, because minting an ID token for its *own*
