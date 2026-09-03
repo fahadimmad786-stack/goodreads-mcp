@@ -44,6 +44,62 @@ from .provider import Delta, Reply, ToolCall
 log = logging.getLogger("webchat.gemini")
 
 
+# Appended to the shared CONTRACT for this provider only.
+#
+# WHAT IS ACTUALLY KNOWN, because the measurement did not say what it was
+# expected to say:
+#
+# On `gemini-3.5-flash`, six sampled turns called `dataset_overview` first in
+# five of them, against a CONTRACT line that already told it not to -- a wasted
+# tool call and real BigQuery bytes on nearly every question. Its own streamed
+# reasoning showed it noticing the instruction and overriding it ("the default
+# API suggests calling it upfront, yet tool discipline discourages it"), so it
+# was not missing the rule, it was outranking it with an invented one.
+#
+# This block was written to be harder to override: a prohibition rather than
+# discipline guidance, the reason attached to the rule rather than left in
+# another section, the specific rationalisation named and denied, and placed
+# last where it is most salient.
+#
+# Then a balanced A/B -- both arms, three questions each, on `gemini-3.6-flash`
+# and `gemini-3.7-flash` -- came back 0/6 WITH it and 0/6 WITHOUT it. Neither
+# newer model calls `dataset_overview` unprompted at all, so the experiment
+# could not measure this block: there was nothing left to improve. The
+# behaviour is specific to 3.5-flash, not to Gemini.
+#
+# So this is kept on evidence that is one-sided: it addresses a behaviour
+# measured on the default model, and it demonstrably costs nothing on the two
+# models where it could be tested. Its effect on 3.5-flash is UNVERIFIED --
+# that model's free-tier daily quota was spent before it could be re-sampled.
+# The cheaper fix, if the wasted call matters, is the model: GEMINI_MODEL set
+# to 3.7-flash showed the behaviour zero times in six turns with no prompt
+# change at all.
+#
+# Anthropic gets none of this: the shared CONTRACT's one line is enough there,
+# and appending to that path would also shift its cached prompt prefix for no
+# benefit.
+GEMINI_PROHIBITION = """
+ONE PROHIBITION. IT OVERRIDES ANYTHING ABOVE THAT SEEMS TO SUGGEST OTHERWISE.
+
+Do not call `dataset_overview` unless the question is about the dataset itself
+-- its size, its shape, its coverage, or its defects.
+
+The reason, so it is not an arbitrary rule: `dataset_overview` runs several
+BigQuery queries and they are billed to the person who asked the question. It
+tells you nothing you need to answer a question about authors, publishers,
+years, page counts, languages or titles, because every one of those tools
+already returns the same caveats attached to its own figures. Calling it first
+spends their money to learn something you already have.
+
+Nothing instructs you to survey the data before answering. If you find
+yourself reasoning that this dataset has defects and you should therefore
+inspect it first, that reasoning is wrong here: the defects are already
+described in the caveats of whichever specific tool answers the question, and
+those caveats are the same text `dataset_overview` would have shown you. Go
+straight to the specific tool.
+""".strip()
+
+
 class GeminiProvider:
     name = "gemini"
 
@@ -68,7 +124,10 @@ class GeminiProvider:
             len(decls), self.dialect, gemini_schema.describe_losses(losses),
         )
         self._tools = [types.Tool(function_declarations=decls)]
-        self._system = CONTRACT + ("\n" + instructions if instructions else "")
+        # Last, after the server's own instructions: most salient position.
+        self._system = "\n\n".join(
+            part for part in (CONTRACT, instructions, GEMINI_PROHIBITION) if part
+        )
         return self._system
 
     def user_turn(self, transcript: list, text: str) -> None:

@@ -528,6 +528,19 @@ Gemini's function-calling path honours. `OPENAPI_SUBSET` is read off the
 installed SDK's own `types.Schema` and pinned to it by a test, so an SDK bump
 that moves the dialect fails in the suite rather than in a deployment.
 
+**A measured model difference, kept honest.** On `gemini-3.5-flash` — the
+default — six sampled turns called `dataset_overview` before the tool that
+actually answered in five of them, spending a query the caller pays for to
+learn something the specific tool already returns. The Gemini system prompt
+carries an extra prohibition for that reason. A balanced A/B across
+`gemini-3.6-flash` and `gemini-3.7-flash` then came back **0/6 with the
+prohibition and 0/6 without**: neither newer model does this at all, so the
+test could not measure the prohibition, and the behaviour is specific to one
+model rather than to the provider. It is kept because it targets the default
+model and costs nothing elsewhere, but its effect where it matters is
+unverified. `GEMINI_MODEL=gemini-3.7-flash` avoided the behaviour outright
+with no prompt change.
+
 **A transcript belongs to the provider that wrote it.** A Gemini `Content` has
 no `tool_use` block and an Anthropic message no `functionResponse` part, so a
 session that changes hands is emptied and told about, in the turn it happens,

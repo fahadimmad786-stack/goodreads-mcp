@@ -2637,3 +2637,59 @@ def test_a_failed_call_is_named_by_its_provider_and_never_retried(monkeypatch, s
     assert "explain_error" in body
     for word in ("retry", "sleep", "backoff", "attempt"):
         assert word not in body, f"the loop {word}s around a failed call; it must not"
+
+
+# --- a prompt difference that belongs to one provider ----------------------
+
+
+def test_the_dataset_overview_prohibition_is_gemini_only_and_goes_last(schemas, monkeypatch):
+    """
+    A measured provider difference, not a general prompt change. Gemini
+    overrode the shared CONTRACT's discipline line; Anthropic does not, and
+    appending to that path would also shift its cached prompt prefix for
+    nothing.
+    """
+    from webchat import provider, provider_gemini
+    from webchat.agent import CONTRACT
+
+    assert "dataset_overview" in CONTRACT, "the shared rule still exists"
+    assert provider_gemini.GEMINI_PROHIBITION not in CONTRACT
+
+    monkeypatch.setattr(config, "GEMINI_API_KEY", "g-key")
+    monkeypatch.setattr(config, "ANTHROPIC_API_KEY", None)
+    monkeypatch.setattr(config, "CHAT_PROVIDER", None)
+    gem = provider.select(_StubBridge(schemas))
+    system = asyncio.run(gem.declare())
+
+    assert system.startswith(CONTRACT), "the shared contract still leads"
+    assert system.rstrip().endswith(provider_gemini.GEMINI_PROHIBITION), \
+        "the prohibition must be last, where it is most salient"
+
+    # Stated as a prohibition with its reason attached, not as more guidance.
+    text = provider_gemini.GEMINI_PROHIBITION
+    assert "PROHIBITION" in text and "OVERRIDES" in text
+    assert "billed" in text, "the reason has to travel with the rule"
+    # And it denies the specific rationalisation the model actually produced.
+    assert "survey the data before answering" in text
+
+    # It carries no numeral, so it cannot seed the checker with a figure that
+    # never came from a tool.
+    assert not re.search(r"\d", text)
+
+
+def test_the_anthropic_system_prompt_is_unchanged_by_the_gemini_addendum(schemas, monkeypatch):
+    from webchat import provider, provider_gemini
+    from webchat.agent import CONTRACT
+
+    monkeypatch.setattr(config, "ANTHROPIC_API_KEY", "a-key")
+    monkeypatch.setattr(config, "GEMINI_API_KEY", None)
+    monkeypatch.setattr(config, "CHAT_PROVIDER", None)
+    ant = provider.select(_StubBridge(schemas))
+    asyncio.run(ant.declare())
+
+    blocks = "\n".join(b["text"] for b in ant._system)
+    assert provider_gemini.GEMINI_PROHIBITION not in blocks
+    assert blocks.startswith(CONTRACT)
+    # The cache breakpoint is still on the last block, and only there.
+    assert sum("cache_control" in b for b in ant._system) == 1
+    assert "cache_control" in ant._system[-1]
