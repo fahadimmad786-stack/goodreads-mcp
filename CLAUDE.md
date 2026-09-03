@@ -31,7 +31,7 @@ node tests/render_probe.mjs                    # what the drawn-figure tests ass
 # Web console (webchat/): a second service, public, in front of the private one
 .venv/bin/pip install -e '.[web]'
 ./run-local.sh                                 # proxy.sh + console + the ?k= URL
-./deploy-chat.sh                               # Cloud Run; adds ONE run.invoker binding
+./deploy-chat.sh                               # Cloud Run; run.invoker on the mcp service + a build SA
 # ANTHROPIC_API_KEY is optional in both: without it the console runs tool mode
 # only (pick a tool, fill in a schema-generated form). CHAT_ACCESS_TOKEN is not.
 
