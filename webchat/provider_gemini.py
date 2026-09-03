@@ -161,6 +161,37 @@ class GeminiProvider:
         if parts:
             transcript.append(types.Content(role="user", parts=parts))
 
+    def explain_error(self, exc: Exception) -> str:
+        """
+        Free-tier failures are ordinary here, so they get named.
+
+        A turn costs one request per model round-trip, so a two-tool answer
+        spends three against a per-model free-tier allowance in the low tens.
+        Hitting it is not a bug and not something to retry around -- it is the
+        tier working as sold -- but "ClientError" would send someone reading
+        their own code instead of their quota page.
+        """
+        code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+        detail = str(getattr(exc, "message", "") or exc)
+        if code == 429:
+            wait = _retry_seconds(detail)
+            when = f"; retry in about {wait}" if wait else "; wait a minute and ask again"
+            return (
+                f"the Google AI Studio free tier's request quota for "
+                f"{self.model} is spent{when}"
+            )
+        if code == 503:
+            return (
+                f"{self.model} is overloaded on the free tier "
+                f"(503 'high demand'); try again, or set GEMINI_MODEL to another"
+            )
+        if code == 404:
+            return (
+                f"the model id {self.model!r} is not available to this key; "
+                f"set GEMINI_MODEL to one that models.list() reports"
+            )
+        return type(exc).__name__
+
     def record_refusal(self, transcript: list, call: ToolCall, message: str) -> None:
         transcript.append(types.Content(role="user", parts=[
             types.Part(
@@ -169,6 +200,16 @@ class GeminiProvider:
                 )
             )
         ]))
+
+
+def _retry_seconds(detail: str) -> str:
+    """The retryDelay Google puts in a 429 body, if it is there."""
+    import re
+
+    match = re.search(r"[Rr]etry in (?:about )?([\d.]+)s", detail) or re.search(
+        r"'retryDelay': '(\d+)s'", detail
+    )
+    return f"{round(float(match.group(1)))}s" if match else ""
 
 
 def _stop_for(finish: str) -> str:

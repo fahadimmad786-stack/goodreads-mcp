@@ -127,6 +127,19 @@ class Provider(Protocol):
         """
         ...
 
+    def explain_error(self, exc: Exception) -> str:
+        """
+        One line a person can act on, for a call that failed.
+
+        `type(exc).__name__` is what the loop would say on its own, and
+        "ClientError" tells nobody anything -- least of all that they hit a
+        free-tier quota and can retry in twelve seconds. The provider knows its
+        own error shapes, so it does the naming. This is a message, never a
+        retry: a loop that quietly tried again would hide exactly the
+        unreliability worth seeing.
+        """
+        ...
+
     def record_refusal(
         self, transcript: list, call: ToolCall, message: str
     ) -> None:

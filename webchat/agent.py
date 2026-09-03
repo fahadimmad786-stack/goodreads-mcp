@@ -165,10 +165,14 @@ class Agent:
                         reply = item
             except Exception as exc:  # noqa: BLE001
                 log.exception("%s call failed", self.provider.name)
+                # The provider names its own failures; the loop only reports.
+                # Deliberately not retried -- a loop that tried again would
+                # hide the unreliability this console exists to make visible.
                 yield {
                     "type": "error",
                     "message": (
-                        f"the {self.provider.name} call failed: {type(exc).__name__}"
+                        f"the {self.provider.name} call failed: "
+                        f"{self.provider.explain_error(exc)}"
                     ),
                 }
                 return

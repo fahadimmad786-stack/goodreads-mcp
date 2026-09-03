@@ -103,6 +103,14 @@ class AnthropicProvider:
         if blocks:
             transcript.append({"role": "user", "content": blocks})
 
+    def explain_error(self, exc: Exception) -> str:
+        status = getattr(exc, "status_code", None)
+        if status == 429:
+            return "rate limited by the Anthropic API; wait a moment and ask again"
+        if status is not None and 500 <= int(status) < 600:
+            return f"the Anthropic API returned {status}; this is usually temporary"
+        return type(exc).__name__
+
     def record_refusal(self, transcript: list, call: ToolCall, message: str) -> None:
         transcript.append({
             "role": "user",

@@ -469,7 +469,7 @@ and the path is the only difference between them:
 |---|---|---|
 | what picks the tool | a model, from a question | you, from a list |
 | what sets the parameters | the model | a form built from the tool's JSON Schema |
-| needs `ANTHROPIC_API_KEY` | yes | **no** |
+| needs a model key | yes — `ANTHROPIC_API_KEY` *or* `GEMINI_API_KEY` | **no** |
 | prose around the card | the model's, numeral-checked | none |
 | the card, caveats, charts, refusals | identical | identical |
 
@@ -478,14 +478,77 @@ the tool call is the same code — the same envelope rendering, the same caveats
 attached to the same fields, the same n/unit/threshold block, the same charts,
 the same refusal cards, the same guard probe under its `bff` badge.
 
+### Two providers behind chat mode
+
+Chat mode runs on Anthropic or on Gemini, and Gemini is there for a specific
+reason: **Google AI Studio's free tier makes the mode work with no paid
+credits**, which is the difference between a console someone can try and one
+that needs an account with a card on it. Whichever key is present selects the
+provider; `CHAT_PROVIDER` decides only when both are, defaulting to
+`anthropic`. Naming a provider you have no key for is a startup error, not a
+fallback. The masthead names the provider and the model, because "chat on" is
+not enough to know what you are reading.
+
+Only four things are actually model-shaped — how tools are declared, what a
+stream event looks like, how a reply is stored, how a result is handed back —
+and `webchat/provider.py` is all four. `agent.py` holds one loop, and
+everything downstream of a normalised `Reply` is shared *by construction*: the
+same frame builders, the same caveat attachment, the same numeral checker, the
+same cards. A test drives that loop with two stub providers whose native
+transcripts are deliberately incompatible and asserts the card frames come out
+equal, because two loops could drift into two renderings and the console's
+whole claim is that a figure comes from the tool's own envelope regardless of
+what fetched it.
+
+Neither SDK is imported at module scope. `select()` imports inside the branch
+it picks, so tool mode loads no model SDK at all and a Gemini deployment never
+loads `anthropic`.
+
+**What the schema translation costs.** The tool schemas are never rewritten by
+hand — `gemini_schema.py` re-dialects the exact `tools/list` output, the same
+objects that generate the tool-mode forms. `FunctionDeclaration` accepts one of
+two dialects and the default is `parameters_json_schema`, standard JSON Schema,
+which our schemas already are: a test asserts every one of the 13 reaches
+Gemini byte-identical to what the server published. The `parameters` fallback
+(`GEMINI_SCHEMA_DIALECT=openapi`) is a genuine OpenAPI 3.0 subset, and against
+this surface it drops exactly one keyword:
+
+| keyword | where | in the subset? |
+|---|---|---|
+| `type`, `description`, `default`, `minimum`, `maximum`, `required`, `anyOf`, `additionalProperties` | throughout | yes |
+| **`exclusiveMinimum`** | `rating_distribution.bucket_size` | **no** |
+
+That loss is logged at startup rather than swallowed, and it demotes the
+constraint rather than removing it: the MCP server still holds the real bound
+in pydantic, so a `bucket_size` the dialect failed to forbid comes back as a
+**visible refusal card** carrying the server's own reasoning — which is the
+behaviour wanted, not a silent drop. `anyOf: [T, null]`, which is how every
+optional parameter here serialises, is rewritten to `nullable: true`, the form
+Gemini's function-calling path honours. `OPENAPI_SUBSET` is read off the
+installed SDK's own `types.Schema` and pinned to it by a test, so an SDK bump
+that moves the dialect fails in the suite rather than in a deployment.
+
+**A transcript belongs to the provider that wrote it.** A Gemini `Content` has
+no `tool_use` block and an Anthropic message no `functionResponse` part, so a
+session that changes hands is emptied and told about, in the turn it happens,
+before any of the answer. The per-session turn ceiling survives that reset:
+refilling it would make switching provider a way around the spend guard.
+
+**A failed model call is named, never retried.** On the free tier a spent quota
+is an ordinary outcome, so the provider translates its own error shapes —
+"the Google AI Studio free tier's request quota for gemini-3.5-flash is spent;
+retry in about 12s" rather than `ClientError`. There is no retry loop
+anywhere, and a test asserts it: retrying would hide the unreliability this
+console exists to make visible.
+
 ```bash
 .venv/bin/pip install -e '.[web]'
 ./run-local.sh          # starts proxy.sh if needed, then the console; prints the URL
 ./deploy-chat.sh        # Cloud Run; prints the ?k= URL
 ```
 
-`run-local.sh` is the whole local path in one command. It reads
-`ANTHROPIC_API_KEY` from a gitignored `.env` if there is one — creating the file
+`run-local.sh` is the whole local path in one command. It reads the model key
+from a gitignored `.env` if there is one — creating the file
 with a comment when it is absent, and saying which modes the run will offer
 rather than refusing to start — generates a
 `CHAT_ACCESS_TOKEN` on first run and saves it back to `.env` so the `?k=` URL
@@ -609,9 +672,9 @@ place this gets over-granted.
    minutes before it expires, sent as `Authorization: Bearer`. Google's edge
    validates the signature, the audience and `roles/run.invoker` before the
    request reaches the container.
-3. **Console → Anthropic.** Only in chat mode. `ANTHROPIC_API_KEY` from Secret
-   Manager via `--set-secrets`, never `--set-env-vars`, never in the image or
-   the repo. Absent it, this leg does not exist and neither does the mode.
+3. **Console → the model.** Only in chat mode. The key from Secret Manager via
+   `--set-secrets`, never `--set-env-vars`, never in the image or the repo.
+   Absent it, this leg does not exist and neither does the mode.
 
 Locally the default is the `proxy.sh` path: `GOODREADS_MCP_URL` points at
 `127.0.0.1:8080` and the console sends no credential of its own, because

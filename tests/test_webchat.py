@@ -2589,3 +2589,51 @@ def test_the_budget_refusal_goes_back_to_the_model_not_only_to_the_screen(schema
         isinstance(entry.get("parts"), str) and "budget" in entry["parts"]
         for entry in session.messages
     ), session.messages
+
+
+def test_a_failed_call_is_named_by_its_provider_and_never_retried(monkeypatch, schemas):
+    """
+    On the free tier a spent quota is an ordinary outcome, and "ClientError"
+    would send someone to read their own code instead of their quota page. It
+    is reported, not retried: a retry loop would hide exactly the
+    unreliability this console exists to make visible.
+    """
+    from webchat import provider
+
+    class _ApiError(Exception):
+        def __init__(self, code, message=""):
+            super().__init__(message)
+            self.code = code
+            self.status_code = code
+            self.message = message
+
+    monkeypatch.setattr(config, "GEMINI_API_KEY", "g-key")
+    monkeypatch.setattr(config, "ANTHROPIC_API_KEY", None)
+    monkeypatch.setattr(config, "CHAT_PROVIDER", None)
+    gem = provider.select(_StubBridge(schemas))
+
+    spent = gem.explain_error(_ApiError(429, "Quota exceeded. Please retry in 12.3s"))
+    assert "free tier" in spent and "quota" in spent
+    assert "12s" in spent, "the retry delay the API supplied should reach the person"
+    assert gem.model in spent
+
+    assert "overloaded" in gem.explain_error(_ApiError(503, "high demand"))
+    assert "GEMINI_MODEL" in gem.explain_error(_ApiError(404, "not available"))
+    # Anything unrecognised still says something rather than nothing.
+    assert gem.explain_error(ValueError("odd")) == "ValueError"
+
+    monkeypatch.setattr(config, "ANTHROPIC_API_KEY", "a-key")
+    monkeypatch.setattr(config, "GEMINI_API_KEY", None)
+    ant = provider.select(_StubBridge(schemas))
+    assert "rate limited" in ant.explain_error(_ApiError(429))
+    assert "temporary" in ant.explain_error(_ApiError(503))
+
+    # No retry anywhere in the loop.
+    import inspect
+
+    from webchat import agent
+
+    body = _strip_comments(inspect.getsource(agent)).split("async def run_turn", 1)[1]
+    assert "explain_error" in body
+    for word in ("retry", "sleep", "backoff", "attempt"):
+        assert word not in body, f"the loop {word}s around a failed call; it must not"
