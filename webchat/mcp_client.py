@@ -66,6 +66,19 @@ class ToolOutcome:
             return json.dumps(self.envelope, default=str)
         return json.dumps({"error": self.message, "kind": self.kind})
 
+    def for_model_dict(self) -> dict:
+        """
+        The same content as an object, for a provider whose tool-result slot
+        takes one.
+
+        Gemini's `functionResponse.response` is a struct, not a string. Routed
+        through `for_model()` and back rather than built separately, so the two
+        providers cannot come to show the model different things -- the
+        round-trip is also what applies `default=str` to whatever BigQuery
+        returned that JSON has no opinion about.
+        """
+        return json.loads(self.for_model())
+
 
 def classify_error(text: str) -> str:
     """

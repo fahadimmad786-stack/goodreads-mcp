@@ -27,7 +27,13 @@ from . import config
 @dataclass
 class Session:
     id: str
-    messages: list[dict[str, Any]] = field(default_factory=list)
+    # The transcript is whatever the active provider puts there -- Anthropic
+    # content blocks, Gemini Contents -- so it is only meaningful alongside the
+    # name of the provider that wrote it. Handing one provider the other's
+    # history is not a degraded conversation, it is a malformed request, so
+    # `adopt()` below refuses instead of hoping.
+    provider: str | None = None
+    messages: list[Any] = field(default_factory=list)
     turns: int = 0
     created_at: float = field(default_factory=time.time)
     last_seen: float = field(default_factory=time.time)
@@ -38,6 +44,34 @@ class Session:
 
     def touch(self) -> None:
         self.last_seen = time.time()
+
+    def adopt(self, provider: str) -> int:
+        """
+        Claim this session for `provider`, discarding a transcript another one
+        wrote. Returns how many messages were dropped -- 0 in every ordinary
+        case.
+
+        A switch happens when a deployment gains or loses a key, or when
+        CHAT_PROVIDER changes under a browser holding a live cookie. The
+        transcript is provider-native and cannot be translated: Gemini has no
+        `tool_use` block and Anthropic has no `functionResponse` part, so
+        passing one to the other fails inside the SDK with an error about a
+        field, which tells the person nothing. Dropped loudly instead, and the
+        caller states it in the turn.
+
+        `turns` deliberately survives. It is the per-session spend ceiling, and
+        a reset that refilled it would make provider-switching a way around it.
+        """
+        if self.provider == provider:
+            return 0
+        dropped = len(self.messages)
+        self.provider = provider
+        self.messages = []
+        # Sourced numerals belonged to the discarded conversation; keeping them
+        # would let the checker call a figure sourced on the strength of a
+        # transcript the model can no longer see.
+        self.sourced_numbers = set()
+        return dropped
 
     @property
     def turns_left(self) -> int:

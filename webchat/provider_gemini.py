@@ -1,0 +1,185 @@
+"""
+The Gemini side of `Provider`. Google AI Studio's free tier is the point.
+
+Four things differ from the Anthropic path and each is here rather than in the
+loop:
+
+* **Tool declarations.** `gemini_schema.declarations()` re-dialects the exact
+  `tools/list` schemas. `parameters_json_schema` is tried first because our
+  schemas are already standard JSON Schema; the OpenAPI subset is the fallback
+  and costs one keyword, which is logged rather than swallowed.
+* **Tool results** go back as `functionResponse` parts carrying an object, not
+  `tool_result` blocks carrying a string.
+* **Stream events.** Chunks arrive as candidates with parts; a part is text,
+  a thought, or a function call, told apart by `part.thought` and
+  `part.function_call` rather than by an event type.
+* **Call ids.** `functionCall` may not carry one, and the client needs a stable
+  id to swap a pending card for its result. Synthesised per turn when absent;
+  matching on tool name would collide when a turn calls one tool twice.
+
+Two settings are load-bearing rather than tuning:
+
+* `automatic_function_calling.disable=True`. Left on, the SDK runs the tool
+  loop itself -- and then there is no `tool_call` frame, no timing split, no
+  refusal card, and no numeral checker seeded from the envelope. The frames are
+  the product here, so the SDK's convenience loop is exactly wrong.
+* `include_thoughts=True`. Gemini can stream reasoning, so it is asked for. If
+  a model returns none, no `thinking_delta` is emitted and the client simply
+  never opens the disclosure -- the absence is already handled and is asserted
+  by a test rather than assumed.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any, AsyncIterator
+
+from google import genai
+from google.genai import types
+
+from . import config, gemini_schema
+from .mcp_client import MCPBridge, ToolOutcome
+from .provider import Delta, Reply, ToolCall
+
+log = logging.getLogger("webchat.gemini")
+
+
+class GeminiProvider:
+    name = "gemini"
+
+    def __init__(self, bridge: MCPBridge, client: Any | None = None):
+        self.bridge = bridge
+        self.model = config.GEMINI_MODEL
+        self.client = client or genai.Client(api_key=config.GEMINI_API_KEY)
+        self.dialect = config.GEMINI_SCHEMA_DIALECT
+        self._tools: list[types.Tool] = []
+        self._system: str = ""
+        self._call_seq = 0
+        self.losses: list[tuple[str, str, str]] = []
+
+    async def declare(self, bridge: MCPBridge | None = None) -> str:
+        from .agent import CONTRACT
+
+        tools, instructions = await (bridge or self.bridge).describe()
+        decls, losses = gemini_schema.declarations(tools, dialect=self.dialect)
+        self.losses = losses
+        log.info(
+            "gemini tool surface: %d declarations, dialect=%s — %s",
+            len(decls), self.dialect, gemini_schema.describe_losses(losses),
+        )
+        self._tools = [types.Tool(function_declarations=decls)]
+        self._system = CONTRACT + ("\n" + instructions if instructions else "")
+        return self._system
+
+    def user_turn(self, transcript: list, text: str) -> None:
+        transcript.append(
+            types.Content(role="user", parts=[types.Part(text=text)])
+        )
+
+    def _config(self) -> types.GenerateContentConfig:
+        return types.GenerateContentConfig(
+            system_instruction=self._system,
+            tools=self._tools,
+            max_output_tokens=config.MAX_TOKENS,
+            # The loop is ours. See the module docstring.
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                disable=True
+            ),
+            thinking_config=types.ThinkingConfig(include_thoughts=True),
+        )
+
+    async def stream(self, transcript: list) -> AsyncIterator[Delta | Reply]:
+        parts: list[types.Part] = []
+        calls: list[ToolCall] = []
+        usage = {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0}
+        finish = ""
+
+        chunks = await self.client.aio.models.generate_content_stream(
+            model=self.model, contents=transcript, config=self._config(),
+        )
+        async for chunk in chunks:
+            meta = getattr(chunk, "usage_metadata", None)
+            if meta is not None:
+                usage["input_tokens"] = getattr(meta, "prompt_token_count", 0) or 0
+                usage["output_tokens"] = (
+                    (getattr(meta, "candidates_token_count", 0) or 0)
+                    + (getattr(meta, "thoughts_token_count", 0) or 0)
+                )
+                usage["cache_read_input_tokens"] = (
+                    getattr(meta, "cached_content_token_count", 0) or 0
+                )
+            for candidate in getattr(chunk, "candidates", None) or []:
+                if getattr(candidate, "finish_reason", None):
+                    finish = str(candidate.finish_reason)
+                content = getattr(candidate, "content", None)
+                for part in getattr(content, "parts", None) or []:
+                    parts.append(part)
+                    if getattr(part, "function_call", None) is not None:
+                        calls.append(self._tool_call(part.function_call))
+                    elif getattr(part, "text", None):
+                        if getattr(part, "thought", False):
+                            yield Delta("thinking", part.text)
+                        else:
+                            yield Delta("text", part.text)
+
+        yield Reply(
+            tool_calls=calls,
+            stop="tools" if calls else _stop_for(finish),
+            usage=usage,
+            # Every part, thought signatures included: Gemini needs its own
+            # thought_signature echoed back or a multi-step tool turn loses
+            # the reasoning that led to the call.
+            raw=types.Content(role="model", parts=parts),
+        )
+
+    def _tool_call(self, fc: Any) -> ToolCall:
+        self._call_seq += 1
+        return ToolCall(
+            id=getattr(fc, "id", None) or f"gemini-call-{self._call_seq}",
+            name=fc.name or "",
+            params=dict(getattr(fc, "args", None) or {}),
+        )
+
+    def record_reply(self, transcript: list, reply: Reply) -> None:
+        transcript.append(reply.raw)
+
+    def record_results(
+        self, transcript: list, pairs: list[tuple[ToolCall, ToolOutcome]]
+    ) -> None:
+        parts = [
+            types.Part(
+                function_response=types.FunctionResponse(
+                    # `id` only when the model supplied one; echoing a
+                    # synthesised id back would be inventing protocol.
+                    **({"id": call.id} if not call.id.startswith("gemini-call-") else {}),
+                    name=call.name,
+                    response=outcome.for_model_dict(),
+                )
+            )
+            for call, outcome in pairs
+        ]
+        if parts:
+            transcript.append(types.Content(role="user", parts=parts))
+
+    def record_refusal(self, transcript: list, call: ToolCall, message: str) -> None:
+        transcript.append(types.Content(role="user", parts=[
+            types.Part(
+                function_response=types.FunctionResponse(
+                    name=call.name, response={"error": message},
+                )
+            )
+        ]))
+
+
+def _stop_for(finish: str) -> str:
+    """
+    Gemini's finish reasons, mapped onto the loop's three.
+
+    SAFETY and friends are the model declining, which the console reports as a
+    refusal to the person rather than as a crash.
+    """
+    upper = finish.upper()
+    for token in ("SAFETY", "BLOCKLIST", "PROHIBITED", "SPII", "RECITATION"):
+        if token in upper:
+            return "refusal"
+    return "end"

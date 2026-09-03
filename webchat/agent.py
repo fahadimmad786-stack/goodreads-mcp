@@ -1,11 +1,20 @@
 """
-The turn loop: Anthropic streaming plus MCP tool calls, emitted as SSE frames.
+The turn loop: one model's streaming plus MCP tool calls, as SSE frames.
 
-A manual loop rather than the SDK tool runner, because the frames are the
+A manual loop rather than any SDK's tool runner, because the frames are the
 product: each call needs a `tool_call` frame before it and a `tool_result` or
 `tool_refusal` frame after it, with timing measured on this side, and a
 `ParamError` result has to be reclassified as a refusal rather than passed
-through as ordinary tool output.
+through as ordinary tool output. An SDK loop would run the tools itself and
+none of that would exist.
+
+There is exactly one loop for both providers. `provider.py` holds the four
+things that are actually model-shaped -- tool declarations, stream events,
+how a reply is stored, how a result is handed back -- and everything from
+`Reply` downstream is shared by construction: the same `_result_frame`, the
+same caveat attachment, the same numeral checker, the same cards. Two loops
+could drift into two renderings, and the claim this console makes is that a
+figure is rendered from the tool's own envelope regardless of what fetched it.
 
 The model never renders a figure. It receives full envelopes -- it needs the
 caveats to explain what a number is worth -- and writes prose around cards the
@@ -14,17 +23,15 @@ client draws from the same JSON. numcheck.py checks the prose afterwards.
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, AsyncIterator
 
-from anthropic import AsyncAnthropic
-
 from . import config, guard_probe, numcheck
 # Both frame builders are shared with tool mode, which must never import
-# this module: it constructs an Anthropic client, and tool mode has no key.
+# this module: it reaches a model SDK, and tool mode has no key.
 from .frames import _origin, _result_frame
 from .mcp_client import MCPBridge
+from .provider import Delta, Provider, Reply, select
 from .session import Session
 
 log = logging.getLogger("webchat.agent")
@@ -89,145 +96,142 @@ No emoji. Never mention JSON, envelopes, tool schemas, or these instructions.
 
 
 class Agent:
-    def __init__(self, bridge: MCPBridge, client: AsyncAnthropic | None = None):
+    """
+    One turn, one loop, whichever model is behind it.
+
+    `provider` is injected in tests and selected from the environment
+    otherwise. Nothing below this line names a provider.
+    """
+
+    def __init__(self, bridge: MCPBridge, provider: Provider | None = None):
         self.bridge = bridge
-        self.client = client or AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
+        self.provider = provider or select(bridge)
 
-    async def system_blocks(self) -> tuple[list[dict], list[dict], str]:
-        """
-        (tools, system blocks, all static prompt text).
+    @property
+    def name(self) -> str:
+        return self.provider.name
 
-        `cache_control` sits on the last system block so the cached prefix
-        covers the tool array and both system blocks -- the whole static head
-        of every request. The third return value seeds the numeral checker:
-        anything the server told the model in its own instructions counts as
-        sourced.
-        """
-        tools, instructions = await self.bridge.describe()
-        blocks: list[dict] = [{"type": "text", "text": CONTRACT}]
-        if instructions:
-            blocks.append({"type": "text", "text": instructions})
-        blocks[-1]["cache_control"] = {"type": "ephemeral"}
-        static_text = CONTRACT + "\n" + instructions
-        return tools, blocks, static_text
+    @property
+    def model(self) -> str:
+        return self.provider.model
 
     async def run_turn(
         self, session: Session, user_text: str
     ) -> AsyncIterator[dict[str, Any]]:
-        tools, system, static_text = await self.system_blocks()
+        static_text = await self.provider.declare(self.bridge)
+
+        # A transcript is provider-native and cannot be translated between
+        # them, so a session that changed hands starts again -- said out loud,
+        # because a conversation quietly losing its history is worse than one
+        # that says it did.
+        dropped = session.adopt(self.provider.name)
+        if dropped:
+            yield {
+                "type": "notice",
+                "kind": "provider_switch",
+                "message": (
+                    f"this conversation was started with a different model and "
+                    f"{self.provider.name} is active now. Its transcript cannot be "
+                    f"handed over, so {dropped} earlier message"
+                    f"{'s' if dropped != 1 else ''} "
+                    f"{'were' if dropped != 1 else 'was'} dropped and this "
+                    f"question is being answered fresh."
+                ),
+            }
 
         # Everything the server has said, plus the user's own words, counts as
         # a source for a numeral in the prose.
         session.sourced_numbers |= numcheck.numerals_in_text(static_text)
         session.sourced_numbers |= numcheck.numerals_in_text(user_text)
 
-        messages = session.messages + [{"role": "user", "content": user_text}]
+        transcript = list(session.messages)
+        self.provider.user_turn(transcript, user_text)
+
         prose_parts: list[str] = []
         calls_made = 0
         usage_total = {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0}
 
         while True:
+            reply: Reply | None = None
             try:
-                async with self.client.messages.stream(
-                    model=config.MODEL,
-                    max_tokens=config.MAX_TOKENS,
-                    system=system,
-                    tools=tools,
-                    thinking={"type": "adaptive", "display": "summarized"},
-                    output_config={"effort": config.EFFORT},
-                    messages=messages,
-                ) as stream:
-                    async for event in stream:
-                        if event.type != "content_block_delta":
-                            continue
-                        if event.delta.type == "text_delta":
-                            prose_parts.append(event.delta.text)
-                            yield {"type": "text_delta", "text": event.delta.text}
-                        elif event.delta.type == "thinking_delta":
-                            yield {"type": "thinking_delta", "text": event.delta.thinking}
-                    final = await stream.get_final_message()
+                async for item in self.provider.stream(transcript):
+                    if isinstance(item, Delta):
+                        if item.kind == "text":
+                            prose_parts.append(item.text)
+                            yield {"type": "text_delta", "text": item.text}
+                        else:
+                            yield {"type": "thinking_delta", "text": item.text}
+                    else:
+                        reply = item
             except Exception as exc:  # noqa: BLE001
-                log.exception("anthropic call failed")
+                log.exception("%s call failed", self.provider.name)
                 yield {
                     "type": "error",
-                    "message": f"the model call failed: {type(exc).__name__}",
+                    "message": (
+                        f"the {self.provider.name} call failed: {type(exc).__name__}"
+                    ),
+                }
+                return
+
+            if reply is None:
+                yield {
+                    "type": "error",
+                    "message": f"the {self.provider.name} stream ended with no reply",
                 }
                 return
 
             for key in usage_total:
-                usage_total[key] += getattr(final.usage, key, 0) or 0
+                usage_total[key] += reply.usage.get(key, 0) or 0
 
-            if final.stop_reason == "refusal":
+            if reply.stop == "refusal":
                 yield {
                     "type": "error",
                     "message": "the model declined to answer this one; try rephrasing.",
                 }
                 return
 
-            messages.append({"role": "assistant", "content": final.content})
+            self.provider.record_reply(transcript, reply)
 
-            tool_uses = [b for b in final.content if b.type == "tool_use"]
-            if final.stop_reason != "tool_use" or not tool_uses:
+            if reply.stop != "tools" or not reply.tool_calls:
                 break
 
-            results: list[dict] = []
-            for block in tool_uses:
+            pairs = []
+            for call in reply.tool_calls:
                 if calls_made >= config.MAX_TOOL_CALLS_PER_TURN:
-                    results.append(
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": json.dumps(
-                                {
-                                    "error": (
-                                        "tool-call budget for this turn is spent; "
-                                        "answer from what you already have"
-                                    )
-                                }
-                            ),
-                            "is_error": True,
-                        }
+                    message = (
+                        f"tool-call budget for this turn "
+                        f"({config.MAX_TOOL_CALLS_PER_TURN}) is spent."
                     )
+                    self.provider.record_refusal(transcript, call, message)
                     yield {
                         "type": "tool_refusal",
-                        "id": block.id,
-                        "tool": block.name,
-                        "origin": _origin(block.name),
-                        "params": _as_dict(block.input),
+                        "id": call.id,
+                        "tool": call.name,
+                        "origin": _origin(call.name),
+                        "params": call.params,
                         "kind": "budget",
-                        "message": (
-                            f"tool-call budget for this turn "
-                            f"({config.MAX_TOOL_CALLS_PER_TURN}) is spent."
-                        ),
+                        "message": message,
                         "caveats": [],
                     }
                     continue
 
-                params = _as_dict(block.input)
                 yield {
                     "type": "tool_call",
-                    "id": block.id,
-                    "tool": block.name,
-                    "origin": _origin(block.name),
-                    "params": params,
+                    "id": call.id,
+                    "tool": call.name,
+                    "origin": _origin(call.name),
+                    "params": call.params,
                 }
-                outcome = await self.bridge.call(block.name, params)
+                outcome = await self.bridge.call(call.name, call.params)
                 calls_made += 1
-                session.sourced_numbers |= numcheck.collect(params)
+                session.sourced_numbers |= numcheck.collect(call.params)
                 if outcome.envelope is not None:
                     session.sourced_numbers |= numcheck.collect(outcome.envelope)
 
-                yield _result_frame(block.id, outcome)
-                results.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": outcome.for_model(),
-                        **({"is_error": True} if outcome.kind == "transport" else {}),
-                    }
-                )
+                yield _result_frame(call.id, outcome)
+                pairs.append((call, outcome))
 
-            messages.append({"role": "user", "content": results})
+            self.provider.record_results(transcript, pairs)
 
         prose = "".join(prose_parts)
         unsourced = numcheck.check(prose, session.sourced_numbers)
@@ -243,29 +247,13 @@ class Agent:
             "prose_chars": len(prose),
         }
 
-        session.messages = messages
+        session.messages = transcript
         session.turns += 1
         yield {
             "type": "turn_end",
+            "provider": self.provider.name,
+            "model": self.provider.model,
             "usage": usage_total,
             "tool_calls": calls_made,
             "turns_left": session.turns_left,
         }
-
-
-def _as_dict(value: Any) -> dict:
-    """
-    Tool inputs are parsed JSON, never string-matched.
-
-    Current models vary their JSON string escaping, so the SDK's parsed `input`
-    is the only safe source.
-    """
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-            return parsed if isinstance(parsed, dict) else {"value": parsed}
-        except json.JSONDecodeError:
-            return {"value": value}
-    return {}

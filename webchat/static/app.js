@@ -123,6 +123,15 @@ class Turn {
     this.scroll();
   }
 
+  /* Something the server did to this turn that the person needs to see --
+     currently only a dropped transcript after a provider change. Not an
+     error: the turn goes on to answer. */
+  notice(text) {
+    this.answer.appendChild(el('div', 'notice', text));
+    this.current = null;
+    this.scroll();
+  }
+
   card(element) {
     this.answer.appendChild(element);
     this.current = null;        /* prose after a card starts a new block */
@@ -261,6 +270,7 @@ function place(turn, frame) {
       replace(turn, frame, renderRefusalCard(frame));
       announce(`${frame.tool} was refused: ${frame.kind.replace('_', ' ')}`);
       break;
+    case 'notice': turn.notice(frame.message); break;
     case 'contract': turn.contract(frame); break;
     case 'turn_end': turn.footer(frame); break;
     case 'error': turn.error(frame.message); break;
@@ -386,7 +396,8 @@ function applyChatAvailability(enabled) {
   composer.hidden = !enabled;
   if (!enabled) {
     const why = el('div', 'footnote',
-      'chat is off: this deployment has no ANTHROPIC_API_KEY. The Tools view needs none.');
+      'chat is off: this deployment has no ANTHROPIC_API_KEY or GEMINI_API_KEY. '
+      + 'The Tools view needs none.');
     document.getElementById('examples').before(why);
   }
 }
@@ -398,7 +409,12 @@ async function loadHealth() {
     health = await r.json();
     if (health.mcp === 'ok') {
       statusDot.className = 'dot ok';
-      const model = health.chat_enabled ? health.model : 'no model';
+      /* Which model wrote the prose beside a card, not merely that chat is
+         on: with more than one provider possible, "chat on" leaves the
+         reader unable to tell what they are reading. */
+      const model = health.chat_enabled
+        ? `${health.provider} · ${health.model}`
+        : 'no model';
       status.textContent = `mcp ok · ${health.tools} tools · ${model} · auth ${health.auth}`;
     } else {
       statusDot.className = 'dot bad';

@@ -12,9 +12,19 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
-# The web console only. The MCP server's image never installs these, so the
-# Anthropic SDK is absent from the service that holds BigQuery access.
-web = ["anthropic>=1.0", "starlette>=0.37", "uvicorn>=0.30"]
+# The web console only. The MCP server's image never installs these, so no
+# model SDK is present in the service that holds BigQuery access.
+#
+# Both providers are installed together, and only the chosen one is imported --
+# `provider.select()` imports inside the branch it picks. Installing one and
+# not the other would work, but would turn a config mistake into an ImportError
+# at the first turn instead of a startup log line.
+web = [
+    "anthropic>=1.0",
+    "google-genai>=2.0",
+    "starlette>=0.37",
+    "uvicorn>=0.30",
+]
 
 [project.scripts]
 goodreads-mcp = "goodreads_mcp.server:main"

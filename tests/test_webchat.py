@@ -28,7 +28,7 @@ from goodreads_mcp import caveats, server  # noqa: E402
 from webchat import agent, attach, config, frames, guard_probe, mcp_client, numcheck  # noqa: E402
 from webchat.app import create_app  # noqa: E402
 from webchat.mcp_client import ToolOutcome  # noqa: E402
-from webchat.session import RateLimiter, SessionStore  # noqa: E402
+from webchat.session import RateLimiter, Session, SessionStore  # noqa: E402
 
 ACCESS = os.environ["CHAT_ACCESS_TOKEN"]
 
@@ -443,13 +443,26 @@ def test_startup_refuses_without_an_access_token(monkeypatch):
         config.verify()
 
 
-def test_startup_does_not_need_an_anthropic_key(monkeypatch):
+def _no_model_key(monkeypatch):
     """
-    The key buys a mode, not the service. Without it the console still starts,
+    Clear EVERY model key, not just one.
+
+    There are two now, and a test that cleared only Anthropic's would pass on a
+    machine with no Gemini key and fail on the developer's, who has one
+    exported. "No key" has to mean no key.
+    """
+    monkeypatch.setattr(config, "ANTHROPIC_API_KEY", None)
+    monkeypatch.setattr(config, "GEMINI_API_KEY", None)
+    monkeypatch.setattr(config, "CHAT_PROVIDER", None)
+
+
+def test_startup_does_not_need_a_model_key(monkeypatch):
+    """
+    A key buys a mode, not the service. Without one the console still starts,
     still serves, and still answers tool calls -- so it must not be a startup
     requirement, and the access token must still be one.
     """
-    monkeypatch.setattr(config, "ANTHROPIC_API_KEY", None)
+    _no_model_key(monkeypatch)
     config.verify()
     assert config.chat_enabled() is False
     assert config.public_settings()["chat_enabled"] is False
@@ -725,32 +738,36 @@ def tool_client(schemas):
 # --- the service runs with no model at all ---------------------------------
 
 
-def test_the_console_serves_with_no_anthropic_key(monkeypatch):
+def test_the_console_serves_with_no_model_key(monkeypatch):
     """
     The whole point of the mode: a keyless deployment starts, serves the page,
     and reports the tool surface. Only the chat route is gone.
     """
-    monkeypatch.setattr(config, "ANTHROPIC_API_KEY", None)
+    _no_model_key(monkeypatch)
     app = create_app()
     with TestClient(app) as c:
-        assert app.state.agent is None, "an Anthropic client was built with no key"
+        assert app.state.agent is None, "a model client was built with no key"
         assert c.get(f"/?k={ACCESS}").status_code == 200
         body = c.get("/api/health", headers={"x-chat-access": ACCESS}).json()
         assert body["chat_enabled"] is False
         assert body["model"] is None
+        assert body["provider"] is None
 
 
 def test_chat_refuses_cleanly_without_a_key_and_names_the_mode_that_works(monkeypatch):
-    monkeypatch.setattr(config, "ANTHROPIC_API_KEY", None)
+    _no_model_key(monkeypatch)
     with TestClient(create_app()) as c:
         r = c.post("/api/chat", json={"text": "hi"}, headers={"x-chat-access": ACCESS})
     assert r.status_code == 503
-    assert "ANTHROPIC_API_KEY" in r.json()["error"]
-    assert "tool mode" in r.json()["error"]
+    error = r.json()["error"]
+    # Both keys named: someone without an Anthropic account can still turn
+    # chat on, and the refusal is the only place that gets said.
+    assert "ANTHROPIC_API_KEY" in error and "GEMINI_API_KEY" in error
+    assert "tool mode" in error
 
 
 def test_the_tool_routes_work_without_a_key(monkeypatch, schemas):
-    monkeypatch.setattr(config, "ANTHROPIC_API_KEY", None)
+    _no_model_key(monkeypatch)
     app = create_app()
     app.state.bridge = _StubBridge(schemas)
     with TestClient(app) as c:
@@ -2060,3 +2077,515 @@ def test_a_rotated_label_keeps_both_its_transform_and_its_tooltip(drawn):
     assert any(label["title"] for label in rotated)
     # Upright labels are not transformed at all.
     assert all(label["transform"] is None for label in drawn["vbars_positive"]["cats"])
+
+
+# --- two providers, one loop ----------------------------------------------
+#
+# The console can be driven by Anthropic or by Gemini -- the second because
+# Google AI Studio's free tier makes chat mode work with no paid credits. What
+# has to stay true is that only the model call differs: the frames, the cards,
+# the caveat attachment and the numeral checker are downstream of `Reply` and
+# cannot tell the two apart.
+
+
+def _provider_env(monkeypatch, *, anthropic=None, gemini=None, chat_provider=None):
+    """Set exactly the keys a case is about, clearing the others."""
+    monkeypatch.setattr(config, "ANTHROPIC_API_KEY", anthropic)
+    monkeypatch.setattr(config, "GEMINI_API_KEY", gemini)
+    monkeypatch.setattr(config, "CHAT_PROVIDER", chat_provider)
+
+
+def test_a_key_selects_its_provider_and_no_key_leaves_chat_off(monkeypatch):
+    from webchat import provider
+
+    _provider_env(monkeypatch, anthropic="a-key")
+    assert provider.chosen() == "anthropic" and config.chat_enabled()
+
+    _provider_env(monkeypatch, gemini="g-key")
+    assert provider.chosen() == "gemini" and config.chat_enabled()
+
+    _provider_env(monkeypatch)
+    assert provider.chosen() is None
+    assert not config.chat_enabled(), "no key must leave chat mode off"
+
+
+def test_two_keys_are_decided_by_chat_provider_defaulting_to_anthropic(monkeypatch):
+    """
+    A default that fell out of dict order would change the model behind
+    someone's console without anything being edited.
+    """
+    from webchat import provider
+
+    _provider_env(monkeypatch, anthropic="a-key", gemini="g-key")
+    assert provider.chosen() == "anthropic"
+
+    _provider_env(monkeypatch, anthropic="a-key", gemini="g-key", chat_provider="gemini")
+    assert provider.chosen() == "gemini"
+
+    # Naming a provider with no key is a configuration error, not a fallback.
+    _provider_env(monkeypatch, anthropic="a-key", chat_provider="gemini")
+    with pytest.raises(provider.ProviderError):
+        provider.chosen()
+
+
+@pytest.mark.parametrize(
+    "name,key,other",
+    [("anthropic", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"),
+     ("gemini", "GEMINI_API_KEY", "ANTHROPIC_API_KEY")],
+)
+def test_each_provider_constructs_without_the_others_key(monkeypatch, schemas, name, key, other):
+    """Neither SDK may need the other's credential to be built."""
+    from webchat import provider
+
+    monkeypatch.setattr(config, key, "test-key-not-real")
+    monkeypatch.setattr(config, other, None)
+    monkeypatch.setattr(config, "CHAT_PROVIDER", None)
+
+    built = provider.select(_StubBridge(schemas))
+    assert built.name == name
+    assert built.model, "a provider must name the model it will use"
+    assert isinstance(built, provider.Provider), "must satisfy the interface"
+
+
+def test_the_agent_holds_one_loop_and_names_no_provider():
+    """
+    The loop is the thing that must not be duplicated: two loops could drift
+    into two renderings, and the console's claim is that a card comes from the
+    tool's own envelope regardless of what fetched it.
+    """
+    import inspect
+
+    from webchat import agent
+
+    source = _strip_comments(inspect.getsource(agent))
+    body = source.split("async def run_turn", 1)[1]
+    for name in ("anthropic", "Anthropic", "gemini", "Gemini", "genai"):
+        assert name not in body, f"the loop names {name}; it must not"
+    # And it reaches the model only through the interface.
+    for call in ("self.provider.stream(", "self.provider.record_reply(",
+                 "self.provider.record_results(", "self.provider.record_refusal("):
+        assert call in body, call
+
+
+def test_the_frame_path_is_the_same_object_for_both_providers():
+    """
+    Everything downstream of a tool call is shared by construction. Asserted on
+    the import graph rather than by eye: a provider that imported `frames` or
+    `attach` could start building its own cards.
+    """
+    for name in ("provider_anthropic", "provider_gemini"):
+        tree = ast.parse((WEBCHAT / f"{name}.py").read_text(encoding="utf-8"))
+        reached = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                reached.add((node.module or "").split(".")[-1])
+            elif isinstance(node, ast.Import):
+                reached.update(a.name.split(".")[-1] for a in node.names)
+        for forbidden in ("frames", "attach", "numcheck"):
+            assert forbidden not in reached, \
+                f"{name} imports {forbidden}; rendering must stay in the loop"
+
+
+def test_neither_sdk_is_imported_until_a_provider_is_chosen():
+    """
+    Tool mode has no key and must load no model SDK; a Gemini deployment must
+    not load the Anthropic package either. `select()` imports inside its branch,
+    so the module graph has to stay clean above it.
+    """
+    for module in ("webchat.provider", "webchat.config", "webchat.frames",
+                   "webchat.mcp_client", "webchat.session"):
+        tree = ast.parse(
+            (WEBCHAT / f"{module.split('.')[-1]}.py").read_text(encoding="utf-8")
+        )
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                imported.add(node.module or "")
+            elif isinstance(node, ast.Import):
+                imported.update(a.name for a in node.names)
+        # `google.auth` is fine and unrelated -- mcp_client mints the Cloud Run
+        # OIDC token with it. It is the model SDKs that must stay out.
+        for sdk in ("anthropic", "google.genai"):
+            assert not any(name == sdk or name.startswith(sdk + ".")
+                           for name in imported), \
+                f"{module} imports {sdk} at module scope"
+
+
+# --- the schema translation ------------------------------------------------
+
+
+def test_the_json_schema_dialect_drops_nothing_from_the_real_tool_surface(schemas):
+    """
+    The claim behind `parameters_json_schema`: our schemas already are standard
+    JSON Schema, so the translation is close to identity. Exercised against the
+    real `tools/list` output, not a fixture, so a new parameter with a new
+    keyword is caught here.
+    """
+    from webchat import gemini_schema
+
+    tools = [
+        {"name": name, "description": "", "input_schema": schema}
+        for name, schema in sorted(schemas.items())
+    ]
+    decls, losses = gemini_schema.declarations(tools, dialect="json_schema")
+
+    assert losses == [], "the json_schema path must lose nothing"
+    assert len(decls) == len(tools)
+    for decl, tool in zip(decls, tools, strict=True):
+        assert decl["parameters_json_schema"] == tool["input_schema"], \
+            "the schema must reach Gemini exactly as the server published it"
+        assert "parameters" not in decl, "the two fields are mutually exclusive"
+
+
+def test_the_openapi_fallback_reports_every_keyword_it_cannot_carry(schemas):
+    """
+    The fallback dialect is genuinely smaller, and the one keyword our surface
+    loses is named rather than discovered in production. `exclusiveMinimum` on
+    `bucket_size` is the whole of it today; a second one appearing is a change
+    worth failing on.
+    """
+    from webchat import gemini_schema
+
+    tools = [
+        {"name": name, "description": "", "input_schema": schema}
+        for name, schema in sorted(schemas.items())
+    ]
+    _, losses = gemini_schema.declarations(tools, dialect="openapi")
+
+    assert losses == [("rating_distribution", "/bucket_size", "exclusiveMinimum")], losses
+    # And the report says what it means, because a dropped constraint is still
+    # enforced by the server -- it just becomes a refusal card instead.
+    described = gemini_schema.describe_losses(losses)
+    assert "exclusiveMinimum" in described and "refusal card" in described
+
+
+def test_the_openapi_fallback_keeps_everything_else_it_can(schemas):
+    """Losing one keyword must not mean losing the constraints beside it."""
+    from webchat import gemini_schema
+
+    bucket = gemini_schema.to_openapi_subset(
+        schemas["rating_distribution"]
+    )["properties"]["bucket_size"]
+    assert bucket["maximum"] == 1.0 and bucket["type"] == "number"
+    assert "exclusiveMinimum" not in bucket
+    assert bucket["description"], "the description is what is left to say 0.05 to 1.0"
+
+
+def test_an_optional_parameter_becomes_nullable_rather_than_an_anyOf_with_null(schemas):
+    """
+    Every optional parameter here is pydantic's `X | None`, which serialises as
+    `anyOf: [{type: X}, {type: null}]`. Gemini's function-calling path honours
+    `nullable`, so the fallback rewrites rather than passes through.
+    """
+    from webchat import gemini_schema
+
+    props = gemini_schema.to_openapi_subset(schemas["page_count_stats"])["properties"]
+    language = props["language"]
+    assert language["type"] == "string" and language["nullable"] is True
+    assert "anyOf" not in language
+    assert props["year_from"]["type"] == "integer" and props["year_from"]["nullable"]
+
+
+def test_the_dialect_keyword_set_matches_the_installed_sdk():
+    """
+    `OPENAPI_SUBSET` is read off `types.Schema`, not off prose documentation. An
+    SDK bump that widens or narrows the dialect should fail here rather than in
+    a deployment.
+    """
+    from google.genai import types
+
+    from webchat import gemini_schema
+
+    def camel(name: str) -> str:
+        head, *rest = name.split("_")
+        return head + "".join(w.title() for w in rest)
+
+    sdk = set()
+    for field in types.Schema.model_fields:
+        sdk.add({"defs": "$defs", "ref": "$ref"}.get(field, camel(field)))
+    assert sdk == set(gemini_schema.OPENAPI_SUBSET), (
+        f"only in sdk: {sorted(sdk - set(gemini_schema.OPENAPI_SUBSET))}, "
+        f"only in ours: {sorted(set(gemini_schema.OPENAPI_SUBSET) - sdk)}"
+    )
+    # The one that matters, stated so the reason survives a refactor.
+    assert "exclusiveMinimum" not in sdk
+
+
+# --- a transcript belongs to the provider that wrote it --------------------
+
+
+def test_a_session_changing_provider_drops_its_transcript_and_says_so():
+    """
+    A Gemini `Content` has no `tool_use` block and an Anthropic message has no
+    `functionResponse` part, so handing one to the other fails inside the SDK
+    with a message about a field name. Dropped deliberately instead.
+    """
+    session = Session(id="s")
+    session.provider = "anthropic"
+    session.messages = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": []}]
+    session.sourced_numbers = {"1850115"}
+    session.turns = 4
+
+    dropped = session.adopt("gemini")
+
+    assert dropped == 2 and session.messages == []
+    assert session.provider == "gemini"
+    assert session.sourced_numbers == set(), \
+        "numerals from a discarded transcript are no longer sourced"
+    assert session.turns == 4, \
+        "the spend ceiling must survive, or switching provider would refill it"
+
+
+def test_adopting_the_same_provider_is_a_no_op():
+    session = Session(id="s")
+    session.adopt("gemini")
+    session.messages = [{"role": "user", "content": "hi"}]
+    assert session.adopt("gemini") == 0
+    assert len(session.messages) == 1
+
+
+def test_the_switch_is_announced_to_the_person_not_only_logged():
+    """The loop emits a `notice` frame, and the client renders it."""
+    import inspect
+
+    from webchat import agent
+
+    body = _strip_comments(inspect.getsource(agent)).split("async def run_turn", 1)[1]
+    assert 'session.adopt(' in body
+    assert '"type": "notice"' in body
+    assert '"kind": "provider_switch"' in body
+
+    app_js = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert "case 'notice':" in app_js
+    assert "notice(text)" in app_js
+
+
+# --- what the masthead says ------------------------------------------------
+
+
+def test_health_names_the_provider_and_the_model_not_merely_that_chat_is_on(monkeypatch):
+    _provider_env(monkeypatch, gemini="g-key")
+    settings = config.public_settings()
+    assert settings["chat_enabled"] is True
+    assert settings["provider"] == "gemini"
+    assert settings["model"] == config.GEMINI_MODEL
+
+    _provider_env(monkeypatch, anthropic="a-key")
+    settings = config.public_settings()
+    assert settings["provider"] == "anthropic"
+    assert settings["model"] == config.MODEL
+
+    _provider_env(monkeypatch)
+    settings = config.public_settings()
+    assert settings["chat_enabled"] is False
+    assert settings["provider"] is None and settings["model"] is None
+
+
+def test_the_masthead_renders_both_the_provider_and_the_model():
+    app_js = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert "health.provider" in app_js and "health.model" in app_js
+
+
+# --- a provider that streams no reasoning ----------------------------------
+
+
+def test_the_client_opens_the_reasoning_disclosure_only_when_thinking_arrives():
+    """
+    Gemini may or may not return thoughts. The absence must be nothing on
+    screen, not an empty disclosure or a wait -- so the element is created on
+    the first delta rather than up front.
+    """
+    app_js = _strip_comments((STATIC / "app.js").read_text(encoding="utf-8"))
+    thinking = app_js.split("thinking(text) {", 1)[1].split("\n  }", 1)[0]
+    assert "if (!this.reasoning)" in thinking, \
+        "the disclosure must be built lazily, on the first thinking delta"
+    constructor = app_js.split("constructor(text) {", 1)[1].split("\n  }", 1)[0]
+    assert "this.reasoning = null" in constructor
+    assert "details" not in constructor, "no reasoning element before a delta arrives"
+
+
+# --- the frames do not depend on which model fetched them ------------------
+
+
+class _StubProvider:
+    """
+    A provider with the model removed. Its transcript entries are deliberately
+    a different shape per instance, which is the point: two providers store
+    incompatible native content and the frames must come out the same anyway.
+    """
+
+    def __init__(self, name, tool_calls, shape="blocks"):
+        self.name = name
+        self.model = f"{name}-test-model"
+        self.shape = shape
+        self._script = list(tool_calls)
+        self.recorded = []
+
+    async def declare(self, bridge=None):
+        return "CONTRACT with the figure 1,850,115 in it"
+
+    def user_turn(self, transcript, text):
+        transcript.append({self.shape: text})
+
+    async def stream(self, transcript):
+        from webchat.provider import Delta, Reply
+
+        yield Delta("thinking", f"[{self.name} thinking]")
+        calls = self._script.pop(0) if self._script else []
+        if calls:
+            yield Reply(tool_calls=calls, stop="tools",
+                        usage={"input_tokens": 3, "output_tokens": 4}, raw={"c": calls})
+            return
+        yield Delta("text", "The top row leads by a wide margin.")
+        yield Reply(stop="end", usage={"input_tokens": 1, "output_tokens": 2}, raw={"t": "done"})
+
+    def record_reply(self, transcript, reply):
+        transcript.append({self.shape: reply.raw})
+
+    def record_results(self, transcript, pairs):
+        self.recorded.append([(c.name, o.kind) for c, o in pairs])
+        transcript.append({self.shape: [o.for_model() for _, o in pairs]})
+
+    def record_refusal(self, transcript, call, message):
+        transcript.append({self.shape: message})
+
+
+def _run(agent, session, text):
+    async def go():
+        return [f async for f in agent.run_turn(session, text)]
+
+    return asyncio.run(go())
+
+
+def _one_turn_frames(name, shape, schemas):
+    from webchat.agent import Agent
+    from webchat.provider import ToolCall
+
+    outcome = ToolOutcome(
+        tool="stats_by_author",
+        params={"unit": "works"},
+        kind="ok",
+        # The registry's own rendered text, because `attach.structure()` maps
+        # back from the text -- an id string here would resolve to no caveat.
+        envelope={"data": [], "n": {"n_books": 3865},
+                  "caveats": caveats.collect("edition_duplication"),
+                  "query_meta": {"queries": 1}},
+        mcp_ms=12.0,
+    )
+    bridge = _StubBridge(schemas, outcome=outcome)
+    provider = _StubProvider(
+        name, [[ToolCall(id="c1", name="stats_by_author", params={"unit": "works"})], []],
+        shape=shape,
+    )
+    return _run(Agent(bridge, provider=provider), Session(id=f"s-{name}"), "who is most read?")
+
+
+def test_both_providers_produce_the_same_frames_for_the_same_tool_call(schemas):
+    """
+    The console's claim is that a card is rendered from the tool's own
+    envelope, whatever fetched it. So two providers whose native transcripts
+    are incompatible must still emit an identical frame stream -- identical
+    types, in identical order, with identical card payloads.
+    """
+    left = _one_turn_frames("anthropic", "blocks", schemas)
+    right = _one_turn_frames("gemini", "parts", schemas)
+
+    assert [f["type"] for f in left] == [f["type"] for f in right]
+
+    def cards(frames):
+        return [f for f in frames if f["type"] in ("tool_call", "tool_result", "tool_refusal")]
+
+    assert cards(left) == cards(right), "the rendered frames differ between providers"
+
+    # And the only frames that may name a provider are the ones that are about
+    # the provider: turn_end reports which model answered.
+    for frame in cards(left):
+        assert "anthropic" not in json.dumps(frame)
+
+    ends = [f for f in left if f["type"] == "turn_end"]
+    assert ends[0]["provider"] == "anthropic" and ends[0]["model"] == "anthropic-test-model"
+
+
+def test_the_tool_result_frame_carries_structured_caveats_whichever_provider_ran(schemas):
+    """The caveat registry is reached from the loop, so it cannot be bypassed."""
+    for name, shape in (("anthropic", "blocks"), ("gemini", "parts")):
+        results = [f for f in _one_turn_frames(name, shape, schemas)
+                   if f["type"] == "tool_result"]
+        assert len(results) == 1
+        caveats = results[0]["envelope"]["caveats"]
+        assert caveats and isinstance(caveats[0], dict), name
+        assert caveats[0]["id"] == "edition_duplication"
+        assert caveats[0]["fields"], "a caveat must still name the fields it qualifies"
+
+
+def test_a_provider_switch_announces_itself_in_the_turn_it_happens(schemas):
+    """
+    End to end through the loop: a session another provider wrote is emptied
+    and the person is told, before any of the answer arrives.
+    """
+    from webchat.agent import Agent
+    from webchat.provider import ToolCall
+
+    session = Session(id="s")
+    session.provider = "anthropic"
+    session.messages = [{"blocks": "an earlier question"}, {"blocks": "an earlier answer"}]
+
+    provider = _StubProvider("gemini", [[]], shape="parts")
+    frames = _run(Agent(_StubBridge(schemas), provider=provider), session, "and now?")
+
+    notices = [f for f in frames if f["type"] == "notice"]
+    assert len(notices) == 1, "the switch must be stated exactly once"
+    assert notices[0]["kind"] == "provider_switch"
+    assert "gemini" in notices[0]["message"]
+    assert "2 earlier messages" in notices[0]["message"]
+    # Before the answer, so it is read as a precondition and not an afterthought.
+    assert frames.index(notices[0]) < next(
+        i for i, f in enumerate(frames) if f["type"] in ("text_delta", "thinking_delta")
+    )
+    # And the transcript that replaced it is this provider's own.
+    assert all("parts" in entry for entry in session.messages), session.messages
+
+
+def test_no_switch_notice_when_the_provider_is_unchanged(schemas):
+    from webchat.agent import Agent
+
+    session = Session(id="s")
+    session.provider = "gemini"
+    frames = _run(
+        Agent(_StubBridge(schemas), provider=_StubProvider("gemini", [[]], shape="parts")),
+        session, "hello",
+    )
+    assert not [f for f in frames if f["type"] == "notice"]
+
+
+def test_the_budget_refusal_goes_back_to_the_model_not_only_to_the_screen(schemas, monkeypatch):
+    """
+    A refusal the console invents still has to reach the transcript, or the
+    model waits for a result that never comes. Both providers get told through
+    the same call.
+    """
+    from webchat.agent import Agent
+    from webchat.provider import ToolCall
+
+    monkeypatch.setattr(config, "MAX_TOOL_CALLS_PER_TURN", 1)
+    outcome = ToolOutcome(tool="stats_by_author", params={}, kind="ok",
+                          envelope={"data": [], "n": {}, "caveats": []}, mcp_ms=1.0)
+    provider = _StubProvider("gemini", [[
+        ToolCall(id="c1", name="stats_by_author", params={}),
+        ToolCall(id="c2", name="stats_by_publisher", params={}),
+    ], []], shape="parts")
+    session = Session(id="s")
+    frames = _run(
+        Agent(_StubBridge(schemas, outcome=outcome), provider=provider),
+        session, "two things please",
+    )
+
+    refusals = [f for f in frames if f["type"] == "tool_refusal"]
+    assert len(refusals) == 1 and refusals[0]["kind"] == "budget"
+    assert refusals[0]["tool"] == "stats_by_publisher"
+    # And it reached the transcript, not only the screen: a model left waiting
+    # on a result that never arrives is the failure this guards against.
+    assert any(
+        isinstance(entry.get("parts"), str) and "budget" in entry["parts"]
+        for entry in session.messages
+    ), session.messages

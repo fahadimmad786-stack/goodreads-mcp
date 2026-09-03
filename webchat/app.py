@@ -142,14 +142,16 @@ async def chat(request: Request) -> StreamingResponse | JSONResponse:
 
     # The client hides the chat box when /api/health says the mode is off, so
     # reaching here means a stale page or a direct caller. Say which mode is
-    # available rather than 500ing inside the Anthropic SDK.
+    # available rather than 500ing inside a model SDK.
     if not config.chat_enabled():
         return JSONResponse(
             {
                 "error": (
-                    "chat mode is off: this deployment has no ANTHROPIC_API_KEY. "
-                    "The tool mode needs no model — pick a tool and fill in its "
-                    "parameters instead."
+                    "chat mode is off: this deployment has neither "
+                    "ANTHROPIC_API_KEY nor GEMINI_API_KEY. Either one turns it "
+                    "on, and Google AI Studio's free tier needs no paid "
+                    "credits. The tool mode needs no model at all — pick a tool "
+                    "and fill in its parameters instead."
                 )
             },
             status_code=503,
@@ -492,9 +494,11 @@ def create_app() -> Starlette:
         rather than refuse to boot because the MCP server is briefly away.
         """
         log.info(
-            "goodreads-chat starting: mode=%s model=%s mcp=%s auth=%s",
-            "chat+tools" if config.chat_enabled() else "tools only (no ANTHROPIC_API_KEY)",
-            config.MODEL if config.chat_enabled() else "-",
+            "goodreads-chat starting: mode=%s provider=%s model=%s mcp=%s auth=%s",
+            "chat+tools" if config.chat_enabled()
+            else "tools only (no ANTHROPIC_API_KEY or GEMINI_API_KEY)",
+            config.active_provider() or "-",
+            config.active_model() or "-",
             config.MCP_URL,
             bridge.auth_mode,
         )
@@ -521,9 +525,9 @@ def create_app() -> Starlette:
         ],
     )
     app.state.bridge = bridge
-    # Built only when there is a key. Constructing an Anthropic client without
-    # one is the kind of latent failure this service is built to avoid, and it
-    # would also import the SDK into a deployment that has no use for it.
+    # Built only when there is a key. Constructing a model client without one is
+    # the kind of latent failure this service is built to avoid, and it would
+    # also import an SDK into a deployment that has no use for it.
     app.state.agent = _make_agent(bridge) if config.chat_enabled() else None
     app.state.sessions = SessionStore()
     app.state.limiter = RateLimiter()
@@ -534,7 +538,13 @@ def create_app() -> Starlette:
 
 
 def _make_agent(bridge: MCPBridge):
-    """Imported here, not at module scope: no key, no Anthropic SDK import."""
+    """
+    Imported here, not at module scope: no key, no model SDK import at all.
+
+    `Agent` selects its provider, and `provider.select()` imports only the one
+    SDK it picked -- so a Gemini deployment never loads the Anthropic package
+    and a keyless one loads neither.
+    """
     from .agent import Agent
 
     return Agent(bridge)
