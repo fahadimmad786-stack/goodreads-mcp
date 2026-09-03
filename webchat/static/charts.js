@@ -263,12 +263,20 @@ export function vbars({ rows, cat, value, unit, extra, rotate, desc }) {
       x: x + barW / 2, y: v < 0 ? y + h + 12 : y - 6, class: 'value', 'text-anchor': 'middle',
     }, fmt(v)));
 
+    /* Truncated labels carry their whole text in a <title>, as the hbars
+     * gutter does. The limit stays a character count here rather than being
+     * measured: a vertical bar's label gets a slot, plotW/n, and a slot
+     * cannot grow to fit -- widening one would narrow its neighbour. So the
+     * tooltip is the whole of the fix on this side. */
+    const full = String(r[cat] ?? '');
+    const shown = truncate(full, rotate ? 14 : 9);
     const label = el('text', {
       x: x + barW / 2, y: top + plotH + 14, class: 'cat', 'text-anchor': rotate ? 'end' : 'middle',
-    }, truncate(r[cat], rotate ? 14 : 9));
+    }, shown);
     if (rotate) {
       label.setAttribute('transform', `rotate(-38 ${x + barW / 2} ${top + plotH + 14})`);
     }
+    if (shown !== full) label.appendChild(el('title', {}, full));
     svg.appendChild(label);
   });
   return describe(svg, (desc

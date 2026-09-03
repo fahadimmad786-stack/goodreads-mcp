@@ -92,7 +92,7 @@ const num = (el, a) => Number(el.getAttribute(a));
 
 /* --- what a drawn chart looks like, as numbers --------------------------- */
 
-function readChart(svg, sizeAttr, posAttr) {
+function readChart(svg, sizeAttr, posAttr, rows, cat = 'cat') {
   const bars = svg.querySelectorAll('rect')
     .filter((r) => cls(r).includes('bar'))
     .map((r) => ({
@@ -119,12 +119,16 @@ function readChart(svg, sizeAttr, posAttr) {
       text: t.children.filter((c) => c instanceof Txt).map((c) => c.textContent).join(''),
       x: num(t, 'x'),
       anchor: t.getAttribute('text-anchor'),
+      transform: t.getAttribute('transform'),
       title: (t.children.find((c) => c instanceof El && c.tagName === 'title') || {}).textContent
         ?? null,
     }));
   return {
     label: svg.getAttribute('aria-label'),
     view_box: svg.getAttribute('viewBox'),
+    /* The labels as handed in, so a test can pair each drawn one with the
+     * string it came from without repeating the fixtures. */
+    cat_inputs: rows.map((r) => String(r[cat])),
     bars,
     values,
     cats,
@@ -161,30 +165,23 @@ const SHORT = [
 
 const out = { series: { signed: SIGNED, positive: POSITIVE, long: LONG, short: SHORT } };
 
-out.hbars_signed = readChart(
-  charts.hbars({ rows: SIGNED, cat: 'cat', value: 'v', unit: 'divergence', desc: 'Bar chart: divergence.' }),
-  'width', 'x',
-);
-out.hbars_positive = readChart(
-  charts.hbars({ rows: POSITIVE, cat: 'cat', value: 'v', unit: 'n_books', desc: 'Bar chart: n_books.' }),
-  'width', 'x',
-);
-out.hbars_long = readChart(
-  charts.hbars({ rows: LONG, cat: 'cat', value: 'v', unit: 'n_ratings', desc: 'Bar chart: n_ratings.' }),
-  'width', 'x',
-);
-out.hbars_short = readChart(
-  charts.hbars({ rows: SHORT, cat: 'cat', value: 'v', unit: 'n_books', desc: 'Bar chart: n_books.' }),
-  'width', 'x',
-);
-out.vbars_signed = readChart(
-  charts.vbars({ rows: SIGNED, cat: 'cat', value: 'v', unit: 'divergence', desc: 'Bar chart: divergence.' }),
-  'height', 'y',
-);
-out.vbars_positive = readChart(
-  charts.vbars({ rows: POSITIVE, cat: 'cat', value: 'v', unit: 'n_books', desc: 'Bar chart: n_books.' }),
-  'height', 'y',
-);
+/* Every figure the tests read, drawn once each. `rotate` is how
+ * publish_month_seasonality and page_count_stats draw their labels. */
+const FIGURES = [
+  ['hbars_signed', charts.hbars, SIGNED, 'divergence', {}],
+  ['hbars_positive', charts.hbars, POSITIVE, 'n_books', {}],
+  ['hbars_long', charts.hbars, LONG, 'n_ratings', {}],
+  ['hbars_short', charts.hbars, SHORT, 'n_books', {}],
+  ['vbars_signed', charts.vbars, SIGNED, 'divergence', {}],
+  ['vbars_positive', charts.vbars, POSITIVE, 'n_books', {}],
+  ['vbars_rotated', charts.vbars, LONG, 'n_books', { rotate: true }],
+];
+
+for (const [name, draw, rows, unit, opts] of FIGURES) {
+  const svg = draw({ rows, cat: 'cat', value: 'v', unit, desc: `Bar chart: ${unit}.`, ...opts });
+  const upright = draw === charts.vbars;
+  out[name] = readChart(svg, upright ? 'height' : 'width', upright ? 'y' : 'x', rows);
+}
 
 /* --- a field carrying two caveats ---------------------------------------- */
 

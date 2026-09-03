@@ -2014,3 +2014,49 @@ def test_the_size_the_charts_measure_with_is_the_size_the_stylesheet_sets():
     # character true at all.
     rule = re.search(r"\.chart text \{([^}]*)\}", APP_CSS).group(1)
     assert "var(--t-meta)" in rule and "var(--mono)" in rule
+
+
+def _drawn_charts(drawn):
+    return {name: fig for name, fig in drawn.items() if name.startswith(("hbars", "vbars"))}
+
+
+def test_every_truncated_category_label_carries_its_full_text(drawn):
+    """
+    Both orientations, one rule: a label the chart shortened says so with a
+    real ellipsis and carries the whole string in a <title>, so a pointer can
+    read what was cut. A label drawn whole carries none, which is what makes
+    the tooltip mean "there is more here" rather than decoration.
+
+    hbars can widen its gutter to fit; vbars cannot -- its labels get a slot,
+    plotW/n, and widening one would narrow its neighbour -- so on that side the
+    tooltip is the whole of the fix.
+    """
+    shortened = set()
+    for name, fig in _drawn_charts(drawn).items():
+        for label, full in zip(fig["cats"], fig["cat_inputs"], strict=True):
+            if label["text"] == full:
+                assert label["title"] is None, \
+                    f"{name}: {full!r} is drawn whole but carries a tooltip"
+                continue
+            shortened.add(name)
+            assert label["text"].endswith("…"), f"{name}: {label['text']!r}"
+            assert "..." not in label["text"], "three dots is not an ellipsis"
+            assert label["title"] == full, f"{name}: tooltip does not carry {full!r}"
+            assert full.startswith(label["text"][:-1]), \
+                f"{name}: {label['text']!r} is not the head of {full!r}"
+
+    orientations = {name.split("_")[0] for name in shortened}
+    assert orientations == {"hbars", "vbars"}, \
+        f"only {orientations} exercised truncation; both must be"
+
+
+def test_a_rotated_label_keeps_both_its_transform_and_its_tooltip(drawn):
+    """
+    The rotated variant sets a transform on the same element the <title> hangs
+    off, which is the one place the two could have collided.
+    """
+    rotated = drawn["vbars_rotated"]["cats"]
+    assert all(label["transform"].startswith("rotate(-38 ") for label in rotated)
+    assert any(label["title"] for label in rotated)
+    # Upright labels are not transformed at all.
+    assert all(label["transform"] is None for label in drawn["vbars_positive"]["cats"])
