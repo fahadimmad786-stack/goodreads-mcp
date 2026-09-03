@@ -2693,3 +2693,170 @@ def test_the_anthropic_system_prompt_is_unchanged_by_the_gemini_addendum(schemas
     # The cache breakpoint is still on the last block, and only there.
     assert sum("cache_control" in b for b in ant._system) == 1
     assert "cache_control" in ant._system[-1]
+
+
+# --- .env reaches the running console --------------------------------------
+#
+# The local path is two hops that a Python test would normally never see:
+# run-local.sh parses .env itself, exports what it finds, and the console
+# inherits that environment. A key that survives the first hop and not the
+# second looks exactly like "chat mode is off", with nothing pointing at the
+# shell script that dropped it.
+
+ROOT = WEBCHAT.parent
+RUN_LOCAL = ROOT / "run-local.sh"
+
+# Google AI Studio keys are not [A-Za-z0-9]: they carry dots, dashes and
+# underscores, and base64-ish tails can carry `=`. The `=` is the interesting
+# one -- a parser splitting on the last `=` instead of the first would truncate
+# the value and leave a key that looks present and is wrong.
+AWKWARD_KEY = "AQ.Ab8RN6-Lb_zB1h=MpVhjME4w8D2w21CAy9kLG7bXn-z8PuCj6IWw="
+
+
+def _env_parser_block() -> str:
+    """
+    run-local.sh's own parser, lifted out of the script.
+
+    Lifted rather than copied: a copy would keep passing after the script
+    changed, which is the one thing this test exists to prevent.
+    """
+    src = RUN_LOCAL.read_text(encoding="utf-8")
+    start = src.index('while IFS= read -r line')
+    end = src.index('done < "${ENV_FILE}"') + len('done < "${ENV_FILE}"')
+    return src[start:end]
+
+
+@pytest.fixture(scope="module")
+def bash():
+    exe = shutil.which("bash")
+    if exe is None:  # pragma: no cover - depends on the machine
+        pytest.skip("bash is needed to run run-local.sh's parser")
+    return exe
+
+
+def _parse_env_file(bash, tmp_path, body: str) -> dict:
+    """What run-local.sh would export, given this .env."""
+    env_file = tmp_path / ".env"
+    env_file.write_text(body, encoding="utf-8")
+    script = f'''
+ENV_FILE="{env_file}"
+{_env_parser_block()}
+for k in ANTHROPIC_API_KEY GEMINI_API_KEY CHAT_ACCESS_TOKEN CHAT_PROVIDER; do
+  if [ -n "${{!k+set}}" ]; then printf '%s=%s\\n' "$k" "${{!k}}"; fi
+done
+'''
+    run = subprocess.run(
+        [bash, "-c", script], capture_output=True, text=True, check=False,
+        env={"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")},
+    )
+    assert run.returncode == 0, run.stderr
+    out = {}
+    for line in run.stdout.splitlines():
+        name, _, value = line.partition("=")
+        out[name] = value
+    return out
+
+
+def test_the_env_file_parser_carries_a_google_shaped_key_verbatim(bash, tmp_path):
+    """
+    The first hop. A Google AI Studio key is not alphanumeric, and the value can
+    contain `=`; splitting on the wrong one truncates it into a key that is
+    present, wrong, and fails only when a turn is taken.
+    """
+    parsed = _parse_env_file(bash, tmp_path, f"""
+# a comment, and a blank line follow
+
+ANTHROPIC_API_KEY=
+GEMINI_API_KEY={AWKWARD_KEY}
+CHAT_ACCESS_TOKEN=abc123
+""")
+    assert parsed["GEMINI_API_KEY"] == AWKWARD_KEY
+    assert parsed["ANTHROPIC_API_KEY"] == ""
+    assert parsed["CHAT_ACCESS_TOKEN"] == "abc123"
+
+
+def test_the_parser_strips_one_layer_of_quoting_and_leading_space(bash, tmp_path):
+    """Both forms someone might reasonably write by hand."""
+    parsed = _parse_env_file(bash, tmp_path, f"""
+  GEMINI_API_KEY="{AWKWARD_KEY}"
+""")
+    assert parsed["GEMINI_API_KEY"] == AWKWARD_KEY
+
+
+def test_run_local_passes_every_parsed_variable_through_not_an_allow_list():
+    """
+    The second hop. run-local.sh exports what it parsed and the console
+    inherits it; an allow-list naming only ANTHROPIC_API_KEY would silently
+    drop the Gemini key, which is exactly the failure this guards.
+    """
+    src = RUN_LOCAL.read_text(encoding="utf-8")
+    assert 'export "${key}=${value}"' in src, \
+        "the parser must export whatever it parsed, by name"
+    # The only variables the script sets explicitly are its own plumbing.
+    explicit = set(re.findall(r"^(?:export|unset) ([A-Z_ ]+)", src, re.M))
+    named = {n for line in explicit for n in line.split()}
+    assert not (named & {"ANTHROPIC_API_KEY", "GEMINI_API_KEY", "CHAT_PROVIDER"}), \
+        f"a model key is set or unset explicitly: {named}"
+
+
+@pytest.mark.parametrize(
+    "body,provider_name",
+    [
+        (f"GEMINI_API_KEY={AWKWARD_KEY}\n", "gemini"),
+        ("ANTHROPIC_API_KEY=sk-ant-test\n", "anthropic"),
+        (f"ANTHROPIC_API_KEY=sk-ant-test\nGEMINI_API_KEY={AWKWARD_KEY}\n"
+         "CHAT_PROVIDER=gemini\n", "gemini"),
+    ],
+)
+def test_a_key_from_the_env_file_reaches_the_running_console(
+    bash, tmp_path, monkeypatch, body, provider_name
+):
+    """
+    End to end across both hops: what run-local.sh parses out of .env is what
+    /api/health reports, which is what the masthead shows. A key that reaches
+    config.py but not the served page would leave the terminal and the browser
+    disagreeing, which is how this went unnoticed.
+    """
+    parsed = _parse_env_file(bash, tmp_path, body + "CHAT_ACCESS_TOKEN=tok\n")
+    for name in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "CHAT_PROVIDER"):
+        monkeypatch.setattr(config, name, parsed.get(name) or None)
+
+    assert config.chat_enabled() is True
+    settings = config.public_settings()
+    assert settings["provider"] == provider_name
+    assert settings["model"] == (
+        config.GEMINI_MODEL if provider_name == "gemini" else config.MODEL
+    )
+
+    with TestClient(create_app()) as client:
+        health = client.get("/api/health", headers={"x-chat-access": ACCESS}).json()
+    assert health["chat_enabled"] is True
+    assert health["provider"] == provider_name
+    assert health["model"] == settings["model"]
+
+
+def test_an_empty_key_line_in_the_env_file_is_not_a_key(bash, tmp_path, monkeypatch):
+    """
+    `ANTHROPIC_API_KEY=` exports an empty string, not an absent variable. It has
+    to read as no key, or the console offers a chat mode that fails per turn.
+    """
+    parsed = _parse_env_file(bash, tmp_path, "ANTHROPIC_API_KEY=\nCHAT_ACCESS_TOKEN=tok\n")
+    assert parsed["ANTHROPIC_API_KEY"] == ""
+    monkeypatch.setattr(config, "ANTHROPIC_API_KEY", parsed["ANTHROPIC_API_KEY"] or None)
+    monkeypatch.setattr(config, "GEMINI_API_KEY", None)
+    monkeypatch.setattr(config, "CHAT_PROVIDER", None)
+    assert config.chat_enabled() is False
+
+
+def test_run_local_reports_the_provider_the_console_will_actually_use():
+    """
+    The terminal line and the masthead must not be able to disagree: the script
+    asks the console's own configuration rather than testing one variable.
+    """
+    src = RUN_LOCAL.read_text(encoding="utf-8")
+    assert "provider.chosen()" in src and "config.active_model()" in src
+    assert "no ANTHROPIC_API_KEY or GEMINI_API_KEY" in src
+    # Both routes named when neither key is present.
+    assert "console.anthropic.com" in src and "aistudio.google.com" in src
+    # And the old single-key claim is gone.
+    assert 'MODES="tool mode only — no ANTHROPIC_API_KEY"' not in src
