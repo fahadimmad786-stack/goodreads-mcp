@@ -5,10 +5,10 @@
 #   1. proxy.sh, if nothing is already serving the MCP endpoint on MCP_PORT.
 #      The console needs an authenticated tunnel to the private Cloud Run
 #      service; `gcloud run services proxy` supplies the credential.
-#   2. the console, with ANTHROPIC_API_KEY read from .env if it is there.
-#      Without a key the console still starts: the chat mode is not offered and
-#      the tool mode -- pick a tool, fill in its parameters -- is, which needs
-#      no model and no Anthropic account.
+#   2. the console, with whichever model key is in .env -- ANTHROPIC_API_KEY or
+#      GEMINI_API_KEY. Without either the console still starts: the chat mode is
+#      not offered and the tool mode -- pick a tool, fill in its parameters --
+#      is, which needs no model and no account anywhere.
 #
 # Then it prints the URL with the access key already in it, and waits. Ctrl+C
 # shuts down whatever this script started -- and only that: a proxy that was
@@ -109,10 +109,17 @@ if [ ! -f "${ENV_FILE}" ]; then
   ( umask 177; cat > "${ENV_FILE}" <<'ENVEOF'
 # Local secrets for the web console. Gitignored; never commit this file.
 #
-# ANTHROPIC_API_KEY is optional. With it the console offers the chat mode as
-# well; without it, only the tool mode -- which needs no model at all.
-# Get one from https://console.anthropic.com/
+# Both model keys are optional, and either one turns the chat mode on; without
+# either, only the tool mode -- which needs no model at all. Set both and
+# CHAT_PROVIDER decides, defaulting to anthropic.
+#
+# Get an Anthropic key from https://console.anthropic.com/
 ANTHROPIC_API_KEY=
+
+# Or a Google AI Studio key from https://aistudio.google.com/apikey -- its free
+# tier runs the chat mode with no paid credits, which is the cheapest way to
+# see the console with a model behind it.
+GEMINI_API_KEY=
 
 # CHAT_ACCESS_TOKEN gates the console. run-local.sh generates one here on first
 # run if it is empty, so the ?k= URL stays the same between runs.
@@ -120,7 +127,7 @@ CHAT_ACCESS_TOKEN=
 ENVEOF
   )
   info "no ${ENV_FILE}, so I created one (gitignored, chmod 600)."
-  info "put an ANTHROPIC_API_KEY in it to get the chat mode as well."
+  info "put an ANTHROPIC_API_KEY or GEMINI_API_KEY in it for the chat mode too."
 fi
 
 while IFS= read -r line || [ -n "${line}" ]; do
@@ -162,11 +169,44 @@ CHAT_LOG="${LOG_DIR}/chat.log"
 # the browser is told which modes exist by /api/health; this is only so the
 # person reading the terminal knows before they click.
 
-if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-  MODES="tool mode only — no ANTHROPIC_API_KEY"
-else
-  MODES="chat and tool modes"
-fi
+# Asked of the console's own configuration rather than recomputed here. Which
+# key wins, and what CHAT_PROVIDER does when both are set, is decided in
+# config.py; a second copy of that rule in bash would drift from the masthead
+# this line is meant to match. Prints "<status><tab><detail>".
+PROVIDER_LINE="$("${VENV}/bin/python" - 2>/dev/null <<'PYEOF' || true
+from webchat import config, provider
+
+try:
+    name = provider.chosen()
+except provider.ProviderError as exc:
+    print(f"error\t{exc}")
+else:
+    print(f"ok\t{name} · {config.active_model()}" if name else "none\t")
+PYEOF
+)"
+PROVIDER_STATUS="${PROVIDER_LINE%%$'\t'*}"
+PROVIDER_DETAIL="${PROVIDER_LINE#*$'\t'}"
+
+case "${PROVIDER_STATUS}" in
+  ok)
+    # The same shape the masthead shows: provider · model.
+    MODES="chat and tool modes — ${PROVIDER_DETAIL}"
+    ;;
+  error)
+    die "${PROVIDER_DETAIL}
+
+CHAT_PROVIDER names a provider whose key is not set. Fix it in ${ENV_FILE}, or
+unset it and let the key that is present decide."
+    ;;
+  none)
+    MODES="tool mode only — no ANTHROPIC_API_KEY or GEMINI_API_KEY"
+    ;;
+  *)
+    # The console's own config could not be read. Say so rather than claiming a
+    # mode: guessing is how the terminal ends up disagreeing with the page.
+    MODES="modes unknown — could not read the console configuration"
+    ;;
+esac
 
 # --- access token ----------------------------------------------------------
 
@@ -281,9 +321,11 @@ printf '\n    \033[4mhttp://127.0.0.1:%s/?k=%s\033[0m\n\n' "${PORT}" "${CHAT_ACC
 info "the ?k= key is needed once; after that it lives in an HttpOnly cookie"
 [ -n "${TOOLS}" ] && info "${TOOLS} tools discovered over MCP"
 info "${MODES}"
-if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+if [ "${PROVIDER_STATUS}" = "none" ]; then
   info "  pick a tool and fill in its parameters; the form is built from its schema"
-  info "  add ANTHROPIC_API_KEY to ${ENV_FILE} for the chat mode too"
+  info "  for the chat mode too, add either key to ${ENV_FILE}:"
+  info "    ANTHROPIC_API_KEY  https://console.anthropic.com/"
+  info "    GEMINI_API_KEY     https://aistudio.google.com/apikey — free tier, no credits"
 fi
 [ "${GENERATED_TOKEN}" -eq 1 ] && info "generated a CHAT_ACCESS_TOKEN and saved it to ${ENV_FILE}"
 info "logs: ${CHAT_LOG}  ${PROXY_LOG}"
